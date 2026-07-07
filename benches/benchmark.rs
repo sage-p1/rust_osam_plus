@@ -5,13 +5,13 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! This module contains benchmarks for the `osam` crate.
+//! This module contains benchmarks for the `osam_plus` crate.
 
 extern crate criterion;
 use core::fmt;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use osam::path_osam::DEFAULT_STASH_OVERFLOW_SIZE;
-use osam::{BlockSize, BlockValue, BucketSize, Identifier, PathOsam, TreeIndex};
+use osam_plus::path_osam_plus::DEFAULT_STASH_OVERFLOW_SIZE;
+use osam_plus::{BlockSize, BlockValue, BucketSize, Identifier, PathOsam, TreeIndex};
 use std::mem;
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 
 const CAPACITIES_TO_BENCHMARK: [Identifier; 3] = [1 << 14, 1 << 16, 1 << 20];
 
-// Here, all benchmarks are run for linear and path OSAMs, and block sizes of 64 and 4096.
+// Here, all benchmarks are run for linear and path OSAM+s, and block sizes of 64 and 4096.
 criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(Duration::new(0, 1_000_000_00)).measurement_time(Duration::new(0, 1_000_000_00)).sample_size(10);
@@ -71,7 +71,7 @@ fn benchmark_alloc<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
     let mut group = c.benchmark_group(String::from("PathOsam") + "::alloc");
     let mut rng = StdRng::seed_from_u64(0);
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -81,7 +81,7 @@ fn benchmark_alloc<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
                 capacity: *capacity,
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
-            |b| b.iter(|| osam.alloc(&mut rng)),
+            |b| b.iter(|| osam_plus.alloc(&mut rng)),
         );
     }
 }
@@ -90,7 +90,7 @@ fn benchmark_alloc_and_read<const B: BlockSize, const Z: BucketSize>(c: &mut Cri
     let mut group = c.benchmark_group(String::from("PathOsam") + "::read");
     let mut rng = StdRng::seed_from_u64(0);
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -101,8 +101,8 @@ fn benchmark_alloc_and_read<const B: BlockSize, const Z: BucketSize>(c: &mut Cri
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
             |b| {
-                let address = osam.alloc(&mut rng).unwrap();
-                b.iter(|| osam.read(address.0, address.1));
+                let address = osam_plus.alloc(&mut rng).unwrap();
+                b.iter(|| osam_plus.read(address.0, address.1));
             },
         );
     }
@@ -111,7 +111,7 @@ fn benchmark_alloc_and_read<const B: BlockSize, const Z: BucketSize>(c: &mut Cri
 fn benchmark_read<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
     let mut group = c.benchmark_group(String::from("PathOsam") + "::read");
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -121,7 +121,7 @@ fn benchmark_read<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
                 capacity: *capacity,
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
-            |b| b.iter(|| osam.read(1, *capacity - 1)),
+            |b| b.iter(|| osam_plus.read(1, *capacity - 1)),
         );
     }
 }
@@ -130,7 +130,7 @@ fn benchmark_alloc_and_write<const B: BlockSize, const Z: BucketSize>(c: &mut Cr
     let mut group = c.benchmark_group(String::from("PathOsam") + "::write");
     let mut rng = StdRng::seed_from_u64(0);
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -141,8 +141,10 @@ fn benchmark_alloc_and_write<const B: BlockSize, const Z: BucketSize>(c: &mut Cr
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
             |b| {
-                let address = osam.alloc(&mut rng).unwrap();
-                b.iter(|| osam.write(address.0, address.1, BlockValue::<B>::default(), &mut rng));
+                let address = osam_plus.alloc(&mut rng).unwrap();
+                b.iter(|| {
+                    osam_plus.write(address.0, address.1, BlockValue::<B>::default(), &mut rng)
+                });
             },
         );
     }
@@ -152,7 +154,7 @@ fn benchmark_write<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
     let mut group = c.benchmark_group(String::from("PathOsam") + "::write");
     let mut rng = StdRng::seed_from_u64(0);
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -162,7 +164,7 @@ fn benchmark_write<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
                 capacity: *capacity,
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
-            |b| b.iter(|| osam.write(1, *capacity - 1, BlockValue::<B>::default(), &mut rng)),
+            |b| b.iter(|| osam_plus.write(1, *capacity - 1, BlockValue::<B>::default(), &mut rng)),
         );
     }
 }
@@ -171,7 +173,7 @@ fn benchmark_alloc_and_local_write<const B: BlockSize, const Z: BucketSize>(c: &
     let mut group = c.benchmark_group(String::from("PathOsam") + "::local_write");
     let mut rng = StdRng::seed_from_u64(0);
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -182,8 +184,8 @@ fn benchmark_alloc_and_local_write<const B: BlockSize, const Z: BucketSize>(c: &
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
             |b| {
-                let address = osam.alloc(&mut rng).unwrap();
-                b.iter(|| osam.local_write(address.0, address.1, BlockValue::<B>::default()));
+                let address = osam_plus.alloc(&mut rng).unwrap();
+                b.iter(|| osam_plus.local_write(address.0, address.1, BlockValue::<B>::default()));
             },
         );
     }
@@ -192,7 +194,7 @@ fn benchmark_alloc_and_local_write<const B: BlockSize, const Z: BucketSize>(c: &
 fn benchmark_local_write<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
     let mut group = c.benchmark_group(String::from("PathOsam") + "::local_write");
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -202,7 +204,7 @@ fn benchmark_local_write<const B: BlockSize, const Z: BucketSize>(c: &mut Criter
                 capacity: *capacity,
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
-            |b| b.iter(|| osam.local_write(1, *capacity - 1, BlockValue::<B>::default())),
+            |b| b.iter(|| osam_plus.local_write(1, *capacity - 1, BlockValue::<B>::default())),
         );
     }
 }
@@ -212,7 +214,7 @@ fn benchmark_random_operations<const B: BlockSize, const Z: BucketSize>(c: &mut 
     let mut rng = StdRng::seed_from_u64(0);
 
     for capacity in CAPACITIES_TO_BENCHMARK {
-        let mut osam = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
+        let mut osam_plus = PathOsam::<BlockValue<B>, Z>::new_with_parameters(
             capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )
@@ -233,7 +235,7 @@ fn benchmark_random_operations<const B: BlockSize, const Z: BucketSize>(c: &mut 
         let capacity_usize: usize = capacity.try_into().unwrap();
         let mut value_randomness = vec![0u8; block_size * capacity_usize];
         for i in 0..number_of_operations_to_run {
-            addresses[i] = osam.alloc(&mut rng).unwrap();
+            addresses[i] = osam_plus.alloc(&mut rng).unwrap();
         }
 
         rng.fill(&mut read_versus_write_randomness[..]);
@@ -245,7 +247,7 @@ fn benchmark_random_operations<const B: BlockSize, const Z: BucketSize>(c: &mut 
             |b, &parameters| {
                 b.iter(|| {
                     run_many_random_accesses::<B, Z>(
-                        &mut osam,
+                        &mut osam_plus,
                         parameters.number_of_operations_to_run,
                         black_box(&addresses),
                         black_box(&read_versus_write_randomness),
@@ -259,7 +261,7 @@ fn benchmark_random_operations<const B: BlockSize, const Z: BucketSize>(c: &mut 
 }
 
 fn run_many_random_accesses<const B: BlockSize, const Z: BucketSize>(
-    osam: &mut PathOsam<BlockValue<B>, Z>,
+    osam_plus: &mut PathOsam<BlockValue<B>, Z>,
     number_of_operations_to_run: usize,
     addresses: &[(Identifier, TreeIndex)],
     read_versus_write_randomness: &[bool],
@@ -273,7 +275,7 @@ fn run_many_random_accesses<const B: BlockSize, const Z: BucketSize>(
         let random_read_versus_write: bool = read_versus_write_randomness[operation_number];
 
         if random_read_versus_write {
-            osam.read(identifier, position).unwrap();
+            osam_plus.read(identifier, position).unwrap();
         } else {
             let block_size = B;
             let start_index = block_size * operation_number;
@@ -282,15 +284,17 @@ fn run_many_random_accesses<const B: BlockSize, const Z: BucketSize>(
                 value_randomness[start_index..end_index].try_into().unwrap();
             let random_eviction = rng.gen_bool(0.5);
             if random_eviction {
-                osam.write(
-                    identifier,
-                    position,
-                    BlockValue::new(random_bytes),
-                    &mut rng,
-                )
-                .unwrap();
+                osam_plus
+                    .write(
+                        identifier,
+                        position,
+                        BlockValue::new(random_bytes),
+                        &mut rng,
+                    )
+                    .unwrap();
             } else {
-                osam.local_write(identifier, position, BlockValue::new(random_bytes))
+                osam_plus
+                    .local_write(identifier, position, BlockValue::new(random_bytes))
                     .unwrap();
             }
         }

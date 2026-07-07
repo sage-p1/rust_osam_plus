@@ -5,10 +5,10 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! A simple interactive demonstration of OSAM.
+//! A simple interactive demonstration of OSAM+.
 
-use osam::path_osam::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
-use osam::PathOsam;
+use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
+use osam_plus::PathOsam;
 use rand::rngs::OsRng;
 use rustyline::history::FileHistory;
 use rustyline::Editor;
@@ -38,12 +38,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = Editor::<(), _>::new().unwrap();
 
     println!("In this example, we initialize and interact with an oblivious RAM storing u64s.");
-    println!("How many u64 blocks would you like the OSAM to support?");
+    println!("How many u64 blocks would you like the OSAM+ to support?");
 
     let capacity = parse_u64("\nEnter a power of two:", &mut rl)?;
 
-    // Initialize a Path OSAM storing `capacity` u64s.
-    let mut osam = PathOsam::<u64, DEFAULT_BLOCKS_PER_BUCKET>::new_with_parameters(
+    // Initialize a Path OSAM+ storing `capacity` u64s.
+    let mut osam_plus = PathOsam::<u64, DEFAULT_BLOCKS_PER_BUCKET>::new_with_parameters(
         capacity,
         DEFAULT_STASH_OVERFLOW_SIZE,
     )?;
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nQuitting program...");
             break;
         } else if action == "a" {
-            let address = osam.alloc(&mut rng)?;
+            let address = osam_plus.alloc(&mut rng)?;
             println!(
                 "\nThe allocated address is (identifier: {}, position: {})",
                 address.0, address.1
@@ -78,13 +78,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if action == "w" {
                 let value = parse_u64("\nEnter value: ", &mut rl)?;
-                let _ = osam.write(identifier, position, value, &mut rng)?;
+                let _ = osam_plus.write(identifier, position, value, &mut rng)?;
                 println!(
                     "\nWrote value {} to address (identifier: {}, position: {}).",
                     value, identifier, position
                 );
             } else {
-                let value = osam.read(identifier, position)?;
+                let value = osam_plus.read(identifier, position)?;
                 match value {
                     Some(v) => println!(
                         "\nValue at address (identifier: {}, position: {}) is {}",

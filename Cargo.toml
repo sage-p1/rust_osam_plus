@@ -1,13 +1,13 @@
 [package]
-name = "osam"
+name = "osam_plus"
 version = "0.2.0-pre.1"
 rust-version = "1.88"
 edition = "2021"
-repository = "https://github.com/sage-p1/rust_osam.git"
+repository = "https://github.com/sage-p1/rust_osam_plus.git"
 description = "An implementation of Oblivious SAM."
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-keywords = ["osam", "oblivious", "cryptography"]
+keywords = ["osam_plus", "oblivious", "cryptography"]
 categories = ["cryptography"]
 
 

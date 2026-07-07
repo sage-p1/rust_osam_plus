@@ -13,7 +13,7 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeGreater, ConstantTimeL
 
 use std::num::TryFromIntError;
 
-/// Numeric type used to assign positions buckets in the Path OSAM tree.
+/// Numeric type used to assign positions buckets in the Path OSAM+ tree.
 pub type TreeIndex = u64;
 
 pub(crate) type TreeHeight = u64;

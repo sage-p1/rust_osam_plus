@@ -5,41 +5,41 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! An implementation of Path OSAM.
+//! An implementation of Path OSAM+.
 
 use super::stash::ObliviousStash;
 use crate::{
     bucket::Bucket,
     utils::{CompleteBinaryTreeIndex, TreeHeight, TreeIndex},
-    BucketSize, CounterSize, Identifier, OsamBlock, OsamError, StashSize,
+    BucketSize, CounterSize, Identifier, OsamPlusBlock, OsamPlusError, StashSize,
 };
 use bit_reverse::ParallelReverse;
 use rand::{CryptoRng, Rng};
 use std::collections::HashMap;
 
-/// The parameter "Z" from the Path OSAM literature that sets the number of blocks per bucket; typical values are 3 or 4.
+/// The parameter "Z" from the Path OSAM+ literature that sets the number of blocks per bucket; typical values are 3 or 4.
 /// Here we adopt the more conservative setting of 4.
 pub const DEFAULT_BLOCKS_PER_BUCKET: BucketSize = 4;
 
-/// The default number of overflow blocks that the Path OSAM stash (and recursive stashes) can store.
+/// The default number of overflow blocks that the Path OSAM+ stash (and recursive stashes) can store.
 pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 
-/// A doubly oblivious Path OSAM.
+/// A doubly oblivious Path OSAM+.
 ///
 /// ## Parameters
 ///
-/// - Block type `V`: the type of elements stored by the OSAM.
-/// - Bucket size `Z`: the number of blocks per Path OSAM bucket.
+/// - Block type `V`: the type of elements stored by the OSAM+.
+/// - Bucket size `Z`: the number of blocks per Path OSAM+ bucket.
 ///   Must be at least 2. Typical values are 3, 4, or 5.
 ///   Along with the overflow size, this value affects the probability
 ///   of stash overflow (see below) and should be set with care.
-/// - Overflow size: The number of blocks that the stash can store between OSAM accesses without overflowing.
+/// - Overflow size: The number of blocks that the stash can store between OSAM+ accesses without overflowing.
 ///   Along with the bucket size, this value affects the probability of stash overflow (see below)
 ///   and should be set with care.
 ///
 /// ## Security
 ///
-/// OSAM operations are guaranteed to be oblivious, *unless* the stash overflows.
+/// OSAM+ operations are guaranteed to be oblivious, *unless* the stash overflows.
 /// In this case, the stash will grow, which reveals that the overflow occurred.
 /// This is a violation of obliviousness, but a mild one in several ways.
 /// The stash overflow is very likely to reset to empty after the overflow,
@@ -47,20 +47,20 @@ pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 /// how an attacker might use a stash overflow to infer properties of the access pattern.
 ///
 /// That said, it is best to choose parameters so that the stash does not ever overflow.
-/// With Z = 4, experiments from the [original Path OSAM paper](https://eprint.iacr.org/2013/280.pdf)
+/// With Z = 4, experiments from the [original Path ORAM paper](https://eprint.iacr.org/2013/280.pdf)
 /// indicate that the probability of overflow is independent of the number N of blocks stored,
 /// and that setting SO = 40 is enough to reduce this probability to below 2^{-50} (Figure 3).
 /// The authors conservatively estimate that setting SO = 89 suffices for 2^{-80} overflow probability.
 /// The choice Z = 3 is also popular, although the probability of overflow is less well understood.
 #[derive(Debug)]
-pub struct PathOsam<V: OsamBlock, const Z: BucketSize> {
-    /// The underlying untrusted memory that the OSAM is obliviously accessing on behalf of its client.
+pub struct PathOsam<V: OsamPlusBlock, const Z: BucketSize> {
+    /// The underlying untrusted memory that the OSAM+ is obliviously accessing on behalf of its client.
     physical_memory: Vec<Bucket<V, Z>>,
-    /// The Path OSAM stash.
+    /// The Path OSAM+ stash.
     stash: ObliviousStash<V>,
-    /// The height of the Path OSAM tree data structure.
+    /// The height of the Path OSAM+ tree data structure.
     height: TreeHeight,
-    /// The counter that assigns identifiers to Path OSAM blocks.
+    /// The counter that assigns identifiers to Path OSAM+ blocks.
     // Also serves as the alloc counter.
     identifier_counter: Identifier,
     /// The counter that deterministically picks which path evict.
@@ -81,7 +81,7 @@ pub struct PathOsam<V: OsamBlock, const Z: BucketSize> {
     round_trip_counter: CounterSize,
 }
 
-impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
+impl<V: OsamPlusBlock, const Z: BucketSize> PathOsam<V, Z> {
     /// Returns a new `PathOsam` of default `V` values
     /// with a stash overflow size of `overflow_size` blocks
     /// (See [`PathOsam`]) for a description of these parameters).
@@ -96,25 +96,25 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
     pub fn new_with_parameters(
         block_capacity: Identifier,
         overflow_size: StashSize,
-    ) -> Result<Self, OsamError> {
+    ) -> Result<Self, OsamPlusError> {
         log::info!("PathOsam::new(capacity = {})", block_capacity,);
 
         if !block_capacity.is_power_of_two() | (block_capacity <= 1) {
-            return Err(OsamError::InvalidConfigurationError {
-                parameter_name: "OSAM capacity".to_string(),
+            return Err(OsamPlusError::InvalidConfigurationError {
+                parameter_name: "OSAM+ capacity".to_string(),
                 parameter_value: block_capacity.to_string(),
             });
         }
 
         if Z <= 1 {
-            return Err(OsamError::InvalidConfigurationError {
+            return Err(OsamPlusError::InvalidConfigurationError {
                 parameter_name: "Bucket size Z".to_string(),
                 parameter_value: Z.to_string(),
             });
         }
 
         if overflow_size == 0 {
-            return Err(OsamError::InvalidConfigurationError {
+            return Err(OsamPlusError::InvalidConfigurationError {
                 parameter_name: "Overflow size".to_string(),
                 parameter_value: overflow_size.to_string(),
             });
@@ -126,7 +126,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         let stash = ObliviousStash::new(path_size, overflow_size)?;
 
         // physical_memory holds `block_capacity` buckets, each storing up to Z blocks.
-        // The number of leaves is `block_capacity` / 2, which the original Path OSAM paper's experiments
+        // The number of leaves is `block_capacity` / 2, which the original Path OSAM+ paper's experiments
         // found was sufficient to keep the stash size small with high probability.
         let mut physical_memory = Vec::new();
         physical_memory.resize(usize::try_from(number_of_nodes)?, Bucket::<V, Z>::default());
@@ -156,7 +156,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         })
     }
 
-    /// Returns the capacity in blocks of this OSAM.
+    /// Returns the capacity in blocks of this OSAM+.
     pub fn block_capacity(&self) -> usize {
         self.physical_memory.len()
     }
@@ -165,7 +165,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
     pub fn alloc<R: Rng + CryptoRng>(
         &mut self,
         rng: &mut R,
-    ) -> Result<(Identifier, TreeIndex), OsamError> {
+    ) -> Result<(Identifier, TreeIndex), OsamPlusError> {
         // Assign unique identifier from counter
         let identifier = self.identifier_counter;
         self.identifier_counter += 1;
@@ -182,7 +182,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         position: TreeIndex,
         value: V,
         rng: &mut R,
-    ) -> Result<(), OsamError> {
+    ) -> Result<(), OsamPlusError> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
 
@@ -201,7 +201,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         self.stash
             .write_to_path(&mut self.physical_memory, evict_position)?;
 
-        // Bookkeeping of OSAM stats
+        // Bookkeeping of OSAM+ stats
         self.update_stash_stats();
         self.write_counter += 1;
         self.round_trip_counter += 1;
@@ -215,7 +215,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         identifier: Identifier,
         position: TreeIndex,
         value: V,
-    ) -> Result<(), OsamError> {
+    ) -> Result<(), OsamPlusError> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
 
@@ -223,7 +223,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         // Do this locally without interacting with the server
         self.stash.write_to_stash(identifier, position, value)?;
 
-        // Bookkeeping of OSAM stats
+        // Bookkeeping of OSAM+ stats
         self.update_stash_stats();
         self.local_write_counter += 1;
 
@@ -235,7 +235,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         &mut self,
         identifier: Identifier,
         position: TreeIndex,
-    ) -> Result<Option<V>, OsamError> {
+    ) -> Result<Option<V>, OsamPlusError> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
 
@@ -252,7 +252,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
         self.stash
             .write_to_path(&mut self.physical_memory, evict_position)?;
 
-        // Bookkeeping of OSAM stats
+        // Bookkeeping of OSAM+ stats
         self.update_stash_stats();
         self.read_counter += 1;
         self.round_trip_counter += 1;
@@ -261,7 +261,7 @@ impl<V: OsamBlock, const Z: BucketSize> PathOsam<V, Z> {
     }
 
     /// Calculates the next position to evict
-    fn evict_position(&mut self) -> Result<TreeIndex, OsamError> {
+    fn evict_position(&mut self) -> Result<TreeIndex, OsamPlusError> {
         // Deterministically evict buckets in reverse-lexicographic ordering
         let mut evict_position: TreeIndex = self.evict_counter;
         let height: u32 = self.height.try_into()?;
@@ -365,16 +365,16 @@ mod tests {
     use crate::{bucket::*, test_utils::*};
 
     // Test default parameters.
-    create_path_osam_correctness_tests!(4, 40);
+    create_path_osam_plus_correctness_tests!(4, 40);
 
     // Test small initial stash sizes and correct resizing of stash on overflow.
-    create_path_osam_correctness_tests!(4, 10);
-    create_path_osam_correctness_tests!(4, 1);
+    create_path_osam_plus_correctness_tests!(4, 10);
+    create_path_osam_plus_correctness_tests!(4, 1);
 
     // Test small and large bucket sizes.
-    create_path_osam_correctness_tests!(3, 40);
-    create_path_osam_correctness_tests!(5, 40);
+    create_path_osam_plus_correctness_tests!(3, 40);
+    create_path_osam_plus_correctness_tests!(5, 40);
 
     // Check that the stash size stays reasonably small over the test runs.
-    create_path_osam_stash_size_tests!(4, 40);
+    create_path_osam_plus_stash_size_tests!(4, 40);
 }

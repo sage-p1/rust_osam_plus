@@ -5,12 +5,12 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! A trait representing a Path OSAM stash.
+//! A trait representing a Path OSAM+ stash.
 
 use crate::{
-    bucket::{Bucket, PathOsamBlock},
+    bucket::{Bucket, PathOsamPlusBlock},
     utils::{bitonic_sort_by_keys, CompleteBinaryTreeIndex, TreeIndex},
-    BucketSize, Identifier, OsamBlock, OsamError, StashSize,
+    BucketSize, Identifier, OsamPlusBlock, OsamPlusError, StashSize,
 };
 
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
@@ -18,24 +18,24 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 const STASH_GROWTH_INCREMENT: usize = 10;
 
 #[derive(Debug)]
-/// A fixed-size, obliviously accessed Path OSAM stash data structure implemented using oblivious sorting.
-pub struct ObliviousStash<V: OsamBlock> {
-    blocks: Vec<PathOsamBlock<V>>,
+/// A fixed-size, obliviously accessed Path OSAM+ stash data structure implemented using oblivious sorting.
+pub struct ObliviousStash<V: OsamPlusBlock> {
+    blocks: Vec<PathOsamPlusBlock<V>>,
     path_size: StashSize,
 }
 
-impl<V: OsamBlock> ObliviousStash<V> {
+impl<V: OsamPlusBlock> ObliviousStash<V> {
     pub fn len(&self) -> usize {
         self.blocks.len()
     }
 }
 
-impl<V: OsamBlock> ObliviousStash<V> {
-    pub fn new(path_size: StashSize, overflow_size: StashSize) -> Result<Self, OsamError> {
+impl<V: OsamPlusBlock> ObliviousStash<V> {
+    pub fn new(path_size: StashSize, overflow_size: StashSize) -> Result<Self, OsamPlusError> {
         let num_stash_blocks: usize = (path_size + overflow_size).try_into()?;
 
         Ok(Self {
-            blocks: vec![PathOsamBlock::<V>::dummy(); num_stash_blocks],
+            blocks: vec![PathOsamPlusBlock::<V>::dummy(); num_stash_blocks],
             path_size,
         })
     }
@@ -44,7 +44,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
         &mut self,
         physical_memory: &mut [Bucket<V, Z>],
         position: TreeIndex,
-    ) -> Result<(), OsamError> {
+    ) -> Result<(), OsamPlusError> {
         let height = position.ct_depth();
         let mut level_assignments = vec![TreeIndex::MAX; self.len()];
         let mut level_real_blocks_to_add_counts = vec![0; usize::try_from(height)? + 1]; // Ensures each bucket has exactly Z blocks
@@ -111,7 +111,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
         // If the stash overflows, this loop will execute twice and the inner `if` will execute.
         // This difference in control flow will leak the fact that the stash has overflowed.
         // This is a violation of obliviousness, but the alternative is simply to fail.
-        // If the stash is set large enough when the OSAM is initialized,
+        // If the stash is set large enough when the OSAM+ is initialized,
         // stash overflow will occur only with negligible probability.
         while exists_unfilled_levels.into() {
             // Make a pass over the stash, assigning dummy blocks to unfilled levels in the path.
@@ -154,7 +154,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
 
                 self.blocks.resize(
                     self.blocks.len() + STASH_GROWTH_INCREMENT,
-                    PathOsamBlock::<V>::dummy(),
+                    PathOsamPlusBlock::<V>::dummy(),
                 );
                 level_assignments.resize(
                     level_assignments.len() + STASH_GROWTH_INCREMENT,
@@ -187,7 +187,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
                 let block_is_dummy = self.blocks[stash_index].ct_is_dummy();
                 block.conditional_assign(&self.blocks[stash_index], !block_is_dummy);
                 bucket_to_write.blocks[slot_number] = block;
-                self.blocks[stash_index] = PathOsamBlock::<V>::dummy();
+                self.blocks[stash_index] = PathOsamPlusBlock::<V>::dummy();
             }
         }
 
@@ -198,7 +198,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
         &mut self,
         physical_memory: &mut [Bucket<V, Z>],
         position: TreeIndex,
-    ) -> Result<(), OsamError> {
+    ) -> Result<(), OsamPlusError> {
         let height = position.ct_depth();
 
         // Download physical memory to stash and replace with dummy blocks
@@ -207,7 +207,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
             let mut bucket = physical_memory[bucket_index];
             for slot_index in 0..Z {
                 self.blocks[Z * (usize::try_from(i)?) + slot_index] = bucket.blocks[slot_index];
-                bucket.blocks[slot_index] = PathOsamBlock::<V>::dummy();
+                bucket.blocks[slot_index] = PathOsamPlusBlock::<V>::dummy();
             }
             physical_memory[bucket_index] = bucket;
         }
@@ -220,9 +220,9 @@ impl<V: OsamBlock> ObliviousStash<V> {
         identifier: Identifier,
         position: TreeIndex,
         value: V,
-    ) -> Result<(), OsamError> {
+    ) -> Result<(), OsamPlusError> {
         // Create block with new values
-        let new_block = PathOsamBlock {
+        let new_block = PathOsamPlusBlock {
             value,
             identifier,
             position,
@@ -247,7 +247,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
 
             self.blocks.resize(
                 self.blocks.len() + STASH_GROWTH_INCREMENT,
-                PathOsamBlock::<V>::dummy(),
+                PathOsamPlusBlock::<V>::dummy(),
             );
 
             log::warn!(
@@ -259,7 +259,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
         Ok(())
     }
 
-    pub fn read_from_stash(&mut self, identifier: Identifier) -> Result<Option<V>, OsamError> {
+    pub fn read_from_stash(&mut self, identifier: Identifier) -> Result<Option<V>, OsamPlusError> {
         let mut result: V = V::default();
         let mut found: Choice = 0.into();
 
@@ -271,7 +271,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
             // Read current value of target block into `result`.
             result.conditional_assign(&block.value, is_requested_index);
             // Write new position into target block.
-            block.conditional_assign(&PathOsamBlock::<V>::dummy(), is_requested_index);
+            block.conditional_assign(&PathOsamPlusBlock::<V>::dummy(), is_requested_index);
         }
 
         let mut output: Option<V> = None;
@@ -298,7 +298,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
         level: usize,
         occupied_spaces: &mut u64,
     ) {
-        let mut temp_bucket = vec![PathOsamBlock::<V>::dummy(); Z];
+        let mut temp_bucket = vec![PathOsamPlusBlock::<V>::dummy(); Z];
         let mut identifiers = vec![TreeIndex::MAX; Z];
         // Create a vector copy of the current bucket and a vector of block identifiers.
         // To ensure preexisting blocks in the write path are not overwritten, we fill
@@ -310,7 +310,7 @@ impl<V: OsamBlock> ObliviousStash<V> {
         // safely overwritten.
         for i in 0..Z {
             let block = self.blocks[level * Z + i];
-            self.blocks[level * Z + i] = PathOsamBlock::<V>::dummy();
+            self.blocks[level * Z + i] = PathOsamPlusBlock::<V>::dummy();
             temp_bucket[i] = block;
             let mut identifier = block.identifier;
 

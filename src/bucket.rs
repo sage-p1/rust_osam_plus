@@ -5,9 +5,9 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! Block and bucket structures for Path OSAM.
+//! Block and bucket structures for Path OSAM+.
 
-use crate::{BlockSize, OsamBlock};
+use crate::{BlockSize, OsamPlusBlock};
 use subtle::{Choice, ConditionallySelectable};
 
 use rand::{
@@ -21,7 +21,7 @@ use crate::{utils::TreeIndex, Identifier};
 use subtle::ConstantTimeEq;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-/// An `OsamBlock` consisting of unstructured bytes.
+/// An `OsamPlusBlock` consisting of unstructured bytes.
 pub struct BlockValue<const B: BlockSize> {
     /// The block's data payload.
     pub data: [u8; B],
@@ -39,7 +39,7 @@ impl<const B: BlockSize> Default for BlockValue<B> {
     }
 }
 
-impl<const B: BlockSize> OsamBlock for BlockValue<B> {}
+impl<const B: BlockSize> OsamPlusBlock for BlockValue<B> {}
 
 impl<const B: BlockSize> ConditionallySelectable for BlockValue<B> {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
@@ -62,14 +62,14 @@ impl<const B: BlockSize> Distribution<BlockValue<B>> for Standard {
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
-/// A Path OSAM block combines an `OsamBlock` V with two metadata fields; its OSAM `identifier` and its `position` in the tree.
-pub(crate) struct PathOsamBlock<V> {
+/// A Path OSAM+ block combines an `OsamPlusBlock` V with two metadata fields; its OSAM+ `identifier` and its `position` in the tree.
+pub(crate) struct PathOsamPlusBlock<V> {
     pub value: V,
     pub identifier: Identifier,
     pub position: TreeIndex,
 }
 
-impl<V: OsamBlock> PathOsamBlock<V> {
+impl<V: OsamPlusBlock> PathOsamPlusBlock<V> {
     const DUMMY_IDENTIFIER: Identifier = Identifier::MAX;
     const DUMMY_POSITION: TreeIndex = 0;
 
@@ -86,12 +86,12 @@ impl<V: OsamBlock> PathOsamBlock<V> {
     }
 }
 
-impl<V: OsamBlock> std::fmt::Debug for PathOsamBlock<V> {
+impl<V: OsamPlusBlock> std::fmt::Debug for PathOsamPlusBlock<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.ct_is_dummy().into() {
-            write!(f, "PathOsamBlock::Dummy")
+            write!(f, "PathOsamPlusBlock::Dummy")
         } else {
-            f.debug_struct("PathOsamBlock")
+            f.debug_struct("PathOsamPlusBlock")
                 .field("value", &self.value)
                 .field("identifier", &self.identifier)
                 .field("position", &self.position)
@@ -100,14 +100,14 @@ impl<V: OsamBlock> std::fmt::Debug for PathOsamBlock<V> {
     }
 }
 
-impl<V: OsamBlock> OsamBlock for PathOsamBlock<V> {}
+impl<V: OsamPlusBlock> OsamPlusBlock for PathOsamPlusBlock<V> {}
 
-impl<V: ConditionallySelectable> ConditionallySelectable for PathOsamBlock<V> {
+impl<V: ConditionallySelectable> ConditionallySelectable for PathOsamPlusBlock<V> {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
         let value = V::conditional_select(&a.value, &b.value, choice);
         let identifier = Identifier::conditional_select(&a.identifier, &b.identifier, choice);
         let position = TreeIndex::conditional_select(&a.position, &b.position, choice);
-        PathOsamBlock::<V> {
+        PathOsamPlusBlock::<V> {
             value,
             identifier,
             position,
@@ -116,13 +116,13 @@ impl<V: ConditionallySelectable> ConditionallySelectable for PathOsamBlock<V> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-/// A Path OSAM bucket.
-pub struct Bucket<V: OsamBlock, const Z: BucketSize> {
-    /// The Path OSAM blocks stored by this bucket.
-    pub(crate) blocks: [PathOsamBlock<V>; Z],
+/// A Path OSAM+ bucket.
+pub struct Bucket<V: OsamPlusBlock, const Z: BucketSize> {
+    /// The Path OSAM+ blocks stored by this bucket.
+    pub(crate) blocks: [PathOsamPlusBlock<V>; Z],
 }
 
-impl<V: OsamBlock, const Z: BucketSize> std::fmt::Debug for Bucket<V, Z> {
+impl<V: OsamPlusBlock, const Z: BucketSize> std::fmt::Debug for Bucket<V, Z> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut self_is_dummy = true;
 
@@ -142,23 +142,23 @@ impl<V: OsamBlock, const Z: BucketSize> std::fmt::Debug for Bucket<V, Z> {
     }
 }
 
-impl<V: OsamBlock, const Z: BucketSize> Default for Bucket<V, Z> {
+impl<V: OsamPlusBlock, const Z: BucketSize> Default for Bucket<V, Z> {
     fn default() -> Self {
         Self {
-            blocks: [PathOsamBlock::<V>::dummy(); Z],
+            blocks: [PathOsamPlusBlock::<V>::dummy(); Z],
         }
     }
 }
 
-impl<V: OsamBlock, const Z: BucketSize> ConditionallySelectable for Bucket<V, Z> {
+impl<V: OsamPlusBlock, const Z: BucketSize> ConditionallySelectable for Bucket<V, Z> {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
         let mut result = Self::default();
         for i in 0..result.blocks.len() {
             result.blocks[i] =
-                PathOsamBlock::<V>::conditional_select(&a.blocks[i], &b.blocks[i], choice)
+                PathOsamPlusBlock::<V>::conditional_select(&a.blocks[i], &b.blocks[i], choice)
         }
         result
     }
 }
 
-impl<V: OsamBlock, const Z: BucketSize> OsamBlock for Bucket<V, Z> {}
+impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlusBlock for Bucket<V, Z> {}
