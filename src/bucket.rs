@@ -9,14 +9,11 @@
 
 use crate::{BlockSize, OsamPlusBlock};
 use subtle::{Choice, ConditionallySelectable};
-
 use rand::{
     distributions::{Distribution, Standard},
     Rng,
 };
-
 use crate::BucketSize;
-
 use crate::{utils::TreeIndex, Identifier};
 use subtle::ConstantTimeEq;
 

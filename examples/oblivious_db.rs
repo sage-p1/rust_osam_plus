@@ -8,9 +8,8 @@
 //! An example of using OSAM+ to obliviously serve an indexed database.
 
 extern crate osam_plus;
-
 use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
-use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlusError, PathOsam, TreeIndex};
+use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, TreeIndex};
 use rand::{rngs::OsRng, Rng};
 
 const BLOCK_SIZE: BlockSize = 4096;
@@ -22,7 +21,7 @@ const DATABASE: [[u8; BLOCK_SIZE as usize]; DB_SIZE as usize] =
 fn main() -> Result<(), OsamPlusError> {
     let mut rng = OsRng;
     let mut osam_plus =
-        PathOsam::<BlockValue<BLOCK_SIZE>, DEFAULT_BLOCKS_PER_BUCKET>::new_with_parameters(
+        PathOsamPlus::<BlockValue<BLOCK_SIZE>, DEFAULT_BLOCKS_PER_BUCKET>::new_with_parameters(
             DB_SIZE,
             DEFAULT_STASH_OVERFLOW_SIZE,
         )?;

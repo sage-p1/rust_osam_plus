@@ -8,9 +8,7 @@
 //! Utilities.
 
 use rand::{CryptoRng, Rng, RngCore};
-
 use subtle::{Choice, ConditionallySelectable, ConstantTimeGreater, ConstantTimeLess};
-
 use std::num::TryFromIntError;
 
 /// Numeric type used to assign positions buckets in the Path OSAM+ tree.

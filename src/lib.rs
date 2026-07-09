@@ -28,7 +28,7 @@
 //! The below example reads a database from memory into an OSAM+, thus permitting secret-dependent accesses.
 //!
 //! ```
-//! use osam_plus::{BlockSize, BlockValue, Identifier, PathOsam, TreeIndex};
+//! use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlus, PathOsamPlus, TreeIndex};
 //! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
 //! # use osam_plus::OsamPlusError;
 //!
@@ -41,7 +41,7 @@
 //! [(Identifier::MAX, 0); DB_SIZE as usize];
 //!
 //! // Initialize an OSAM+ to store 64 blocks of 64 bytes each.
-//! let mut osam_plus = PathOsam::<
+//! let mut osam_plus = PathOsamPlus::<
 //!     BlockValue<BLOCK_SIZE>,
 //!     DEFAULT_BLOCKS_PER_BUCKET,
 //!     >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
@@ -75,12 +75,12 @@
 //!
 //! The `DefaultOsam` used in the above example should have good performance in most use cases.
 //! But the underlying algorithms have several tunable parameters that impact performance.
-//! The following example instantiates the same OSAM+ struct as above, but using the `PathOsam`
+//! The following example instantiates the same OSAM+ struct as above, but using the `PathOsamPlus`
 //! interface which exposes these parameters.
 //!
 //! ```
 //! use osam_plus::{BlockSize, BlockValue, BucketSize,
-//!             Identifier, PathOsam, StashSize};
+//!             Identifier, OsamPlus, PathOsamPlus, StashSize};
 //! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
 //! # use osam_plus::OsamPlusError;
 //! # let mut rng = rand::rngs::OsRng;
@@ -90,22 +90,21 @@
 //! const BUCKET_SIZE: BucketSize = DEFAULT_BLOCKS_PER_BUCKET;
 //! const INITIAL_STASH_OVERFLOW_SIZE: StashSize = DEFAULT_STASH_OVERFLOW_SIZE;
 //!
-//! let mut osam_plus = PathOsam::<
+//! let mut osam_plus = PathOsamPlus::<
 //!     BlockValue<BLOCK_SIZE>,
 //!     DEFAULT_BLOCKS_PER_BUCKET,
 //!     >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
 //! # Ok::<(), OsamPlusError>(())
 //! ```
 //!
-//! See [`PathOsam`] for an explanation of these parameters and their possible settings.
+//! See [`PathOsamPlus`] for an explanation of these parameters and their possible settings.
 
 #![warn(clippy::cargo, clippy::doc_markdown, missing_docs, rustdoc::all)]
 
 use std::num::TryFromIntError;
-
 use subtle::ConditionallySelectable;
 use thiserror::Error;
-// use utils::TreeIndex;
+use rand::{CryptoRng, Rng};
 
 pub(crate) mod bucket;
 pub mod path_osam_plus;
@@ -115,7 +114,7 @@ mod test_utils;
 pub(crate) mod utils;
 
 pub use crate::bucket::BlockValue;
-pub use crate::path_osam_plus::PathOsam;
+pub use crate::path_osam_plus::PathOsamPlus;
 pub use crate::utils::TreeIndex;
 
 /// The numeric type used to specify the size of an OSAM+ block in bytes.
@@ -158,4 +157,38 @@ pub enum OsamPlusError {
         /// Its invalid value.
         parameter_value: String,
     },
+}
+
+/// Represents an oblivious RAM (OSAM+) mapping addresses of type `Address` to values of type `V: OsamPlusBlock`.
+pub trait OsamPlus
+where
+    Self: Sized,
+{
+    /// The type of elements stored in the OSAM+.
+    type V: OsamPlusBlock;
+
+    /// Returns the capacity in blocks of this OSAM+.
+    fn block_capacity(&self) -> usize;
+
+    /// Allocates a valid `Identifier` and random`TreeIndex` to be used for reading and writing
+    fn alloc<R: Rng + CryptoRng>(
+        &mut self,
+        rng: &mut R,
+    ) -> Result<(Identifier, TreeIndex), OsamPlusError>;
+
+    /// Obliviously writes the value stored `identifier` and `position`. Evicts blocks to server.
+    fn write<R: Rng + CryptoRng>(
+        &mut self,
+        identifier: Identifier,
+        position: TreeIndex,
+        value: Self::V,
+        rng: &mut R,
+    ) -> Result<(), OsamPlusError>;
+
+    /// Obliviously reads the value stored at `index`.
+    fn read(
+        &mut self,
+        identifier: Identifier,
+        position: TreeIndex,
+    ) -> Result<Option<Self::V>, OsamPlusError>;
 }

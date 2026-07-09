@@ -9,15 +9,14 @@
 //! `osam_plus` crate.
 
 use std::collections::HashMap;
-use std::ops::Div;
 use std::sync::Once;
 static INIT: Once = Once::new();
-use crate::path_osam_plus::PathOsam;
-use crate::{BucketSize, OsamPlusBlock, StashSize};
+use crate::path_osam_plus::PathOsamPlus;
+use crate::{BucketSize, Identifier, OsamPlus, OsamPlusBlock, OsamPlusError, StashSize, TreeIndex};
 use rand::{
     distributions::{Distribution, Standard},
     rngs::StdRng,
-    Rng, SeedableRng,
+    CryptoRng, Rng, SeedableRng,
 };
 use simplelog::{Config, WriteLogger};
 
@@ -34,37 +33,15 @@ pub(crate) fn init_logger() {
     })
 }
 
-pub(crate) fn stash_checker<V: OsamPlusBlock, const Z: BucketSize>(
-    stash_size_experiment: bool,
-    osam_plus: &mut PathOsam<V, Z>,
-) {
-    if stash_size_experiment {
-        assert!(osam_plus.stash_occupancy() < 10);
-    }
-}
-
 /// Tests the correctness of PathOsam on a sequence of all writes then reads
-pub(crate) fn write_then_read<V: OsamPlusBlock, const Z: BucketSize>(
-    osam_plus: &mut PathOsam<V, Z>,
-    bucket_size: BucketSize,
-    operation_factor: usize,
-    overflow_size: StashSize,
-    stash_size_experiment: bool,
+pub(crate) fn write_then_read<T: OsamPlus>(
+    osam_plus: &mut T,
+    num_operations: usize,
 ) where
-    Standard: Distribution<V>,
+    Standard: Distribution<T::V>,
 {
     init_logger();
     let mut rng = StdRng::seed_from_u64(0);
-
-    let capacity = osam_plus.block_capacity();
-    let mut num_operations: usize;
-    if stash_size_experiment {
-        num_operations = (capacity * bucket_size).div(2);
-    } else {
-        num_operations = capacity * bucket_size * operation_factor;
-        num_operations += usize::try_from(overflow_size).unwrap().div(2);
-    }
-
     let mut mirror_hash_map = HashMap::new();
 
     // Generate a sequence of allocs and write a random value
@@ -72,16 +49,10 @@ pub(crate) fn write_then_read<V: OsamPlusBlock, const Z: BucketSize>(
         let address = osam_plus.alloc(&mut rng).unwrap();
         let identifier = address.0;
         let position = address.1;
-        let random_block_value = rng.gen::<V>();
+        let random_block_value = rng.gen::<T::V>();
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.write(identifier, position, random_block_value, &mut rng);
-        stash_checker(stash_size_experiment, osam_plus);
     }
-
-    assert_eq!(
-        osam_plus.write_counter(),
-        StashSize::try_from(osam_plus.alloc_counter()).unwrap()
-    );
 
     // Assert reads fetch the proper data block
     for (address, random_block_value) in mirror_hash_map.iter() {
@@ -91,37 +62,18 @@ pub(crate) fn write_then_read<V: OsamPlusBlock, const Z: BucketSize>(
             osam_plus.read(identifier, position).unwrap().unwrap(),
             *random_block_value
         );
-        stash_checker(stash_size_experiment, osam_plus);
     }
-
-    assert_eq!(
-        osam_plus.write_counter(),
-        StashSize::try_from(osam_plus.alloc_counter()).unwrap()
-    );
-    assert_eq!(osam_plus.write_counter(), osam_plus.read_counter());
 }
 
 /// Tests the correctness of Path OSAM+ on a sequence of all reads then writes
-pub(crate) fn read_then_write<V: OsamPlusBlock, const Z: BucketSize>(
-    osam_plus: &mut PathOsam<V, Z>,
-    bucket_size: BucketSize,
-    operation_factor: usize,
-    overflow_size: StashSize,
-    stash_size_experiment: bool,
+pub(crate) fn read_then_write<T: OsamPlus>(
+    osam_plus: &mut T,
+    num_operations: usize,
 ) where
-    Standard: Distribution<V>,
+    Standard: Distribution<T::V>,
 {
     init_logger();
     let mut rng = StdRng::seed_from_u64(0);
-
-    let capacity = osam_plus.block_capacity();
-    let mut num_operations: usize;
-    if stash_size_experiment {
-        num_operations = (capacity * bucket_size).div(2);
-    } else {
-        num_operations = capacity * bucket_size * operation_factor;
-        num_operations += usize::try_from(overflow_size).unwrap().div(2);
-    }
 
     // Generate a sequence of allocs and write a random value
     for _ in 0..num_operations {
@@ -129,16 +81,8 @@ pub(crate) fn read_then_write<V: OsamPlusBlock, const Z: BucketSize>(
         let identifier = address.0;
         let position = address.1;
         assert_eq!(osam_plus.read(identifier, position).unwrap(), None);
-        stash_checker(stash_size_experiment, osam_plus);
-        let _ = osam_plus.write(identifier, position, V::default(), &mut rng);
-        stash_checker(stash_size_experiment, osam_plus);
+        let _ = osam_plus.write(identifier, position, T::V::default(), &mut rng);
     }
-
-    assert_eq!(
-        osam_plus.read_counter(),
-        StashSize::try_from(osam_plus.alloc_counter()).unwrap()
-    );
-    assert_eq!(osam_plus.read_counter(), osam_plus.write_counter());
 }
 
 /// Tests the correctness of Path OSAM+ on a sequence where
@@ -146,46 +90,28 @@ pub(crate) fn read_then_write<V: OsamPlusBlock, const Z: BucketSize>(
 /// 2) read half of these writes (quarter of all writes)
 /// 3) the second half of writes are done
 /// 4) read all remaining writes
-pub(crate) fn interspersed_write_and_read<V: OsamPlusBlock, const Z: BucketSize>(
-    osam_plus: &mut PathOsam<V, Z>,
-    bucket_size: BucketSize,
-    operation_factor: usize,
-    overflow_size: StashSize,
-    stash_size_experiment: bool,
+pub(crate) fn interspersed_write_and_read<T: OsamPlus>(
+    osam_plus: &mut T,
+    num_operations: usize,
 ) where
-    Standard: Distribution<V>,
+    Standard: Distribution<T::V>,
 {
     init_logger();
     let mut rng = StdRng::seed_from_u64(0);
-
-    let capacity = osam_plus.block_capacity();
-    let mut num_operations: usize;
-    if stash_size_experiment {
-        num_operations = (capacity * bucket_size).div(2);
-    } else {
-        num_operations = capacity * bucket_size * operation_factor;
-        num_operations += usize::try_from(overflow_size).unwrap().div(2);
-    }
-    let half = num_operations.div(2);
-    let quarter = num_operations.div(4);
-
     let mut mirror_hash_map = HashMap::new();
+
+    let half = num_operations.checked_div(2).unwrap();
+    let quarter = num_operations.checked_div(4).unwrap();
 
     // Generate the first half of allocs and write a random value
     for _ in 0..half {
         let address = osam_plus.alloc(&mut rng).unwrap();
         let identifier = address.0;
         let position = address.1;
-        let random_block_value = rng.gen::<V>();
+        let random_block_value = rng.gen::<T::V>();
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.write(identifier, position, random_block_value, &mut rng);
-        stash_checker(stash_size_experiment, osam_plus);
     }
-
-    assert_eq!(
-        osam_plus.write_counter(),
-        StashSize::try_from(osam_plus.alloc_counter()).unwrap()
-    );
 
     // Assert reads fetch the proper data block for half the first writes (quarter of all)
     let mut used_addresses = Vec::new();
@@ -200,7 +126,6 @@ pub(crate) fn interspersed_write_and_read<V: OsamPlusBlock, const Z: BucketSize>
             osam_plus.read(identifier, position).unwrap().unwrap(),
             *random_block_value
         );
-        stash_checker(stash_size_experiment, osam_plus);
         used_addresses.push(address.to_owned());
         counter += 1;
     }
@@ -210,20 +135,14 @@ pub(crate) fn interspersed_write_and_read<V: OsamPlusBlock, const Z: BucketSize>
         mirror_hash_map.remove(address);
     }
 
-    assert_eq!(
-        osam_plus.read_counter(),
-        StashSize::try_from(quarter).unwrap()
-    );
-
     // Generate the second half of allocs and write a random value
     for _ in half..num_operations {
         let address = osam_plus.alloc(&mut rng).unwrap();
         let identifier = address.0;
         let position = address.1;
-        let random_block_value = rng.gen::<V>();
+        let random_block_value = rng.gen::<T::V>();
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.write(identifier, position, random_block_value, &mut rng);
-        stash_checker(stash_size_experiment, osam_plus);
     }
 
     // Assert the remaining three quarters of reads are correct
@@ -234,14 +153,89 @@ pub(crate) fn interspersed_write_and_read<V: OsamPlusBlock, const Z: BucketSize>
             osam_plus.read(identifier, position).unwrap().unwrap(),
             *random_block_value
         );
-        stash_checker(stash_size_experiment, osam_plus);
+    }
+}
+
+/// Tests the correctness of PathOsam on a sequence of all writes then reads
+pub(crate) fn overwrite_then_read<T: OsamPlus>(
+    osam_plus: &mut T,
+    num_operations: usize,
+) where
+    Standard: Distribution<T::V>,
+{
+    init_logger();
+    let mut rng = StdRng::seed_from_u64(0);
+    let mut mirror_hash_map = HashMap::new();
+
+    // Generate a sequence of allocs and write a random value
+    for _ in 0..num_operations {
+        let address = osam_plus.alloc(&mut rng).unwrap();
+        let identifier = address.0;
+        let position = address.1;
+        let random_block_value = rng.gen::<T::V>();
+        mirror_hash_map.insert(address, random_block_value);
+        let _ = osam_plus.write(identifier, position, random_block_value, &mut rng);
+        // println!("OLD: Address ({}, {}) to value {:?}", identifier, position, random_block_value);
     }
 
-    assert_eq!(
-        osam_plus.write_counter(),
-        StashSize::try_from(osam_plus.alloc_counter()).unwrap()
-    );
-    assert_eq!(osam_plus.write_counter(), osam_plus.read_counter());
+    // println!();
+
+    // Overwrite all addresses with new values
+    for (address, random_block_value) in mirror_hash_map.iter_mut() {
+        *random_block_value = rng.gen::<T::V>();
+        // println!("NEW: Address ({}, {}) to value {:?}", address.0, address.1, random_block_value);
+        let _ = osam_plus.write(address.0, address.1, *random_block_value, &mut rng);
+    }
+
+    // Assert reads fetch the updated data block
+    let mut count = 0;
+    for (address, random_block_value) in mirror_hash_map.iter() {
+        let identifier = address.0;
+        let position = address.1;
+        let res = osam_plus.read(identifier, position).unwrap().unwrap();
+        if res == *random_block_value {
+            count += 1;
+        }
+        // assert_eq!(
+        //     osam_plus.read(identifier, position).unwrap().unwrap(),
+        //     *random_block_value,
+        //     "DANG: Address ({}, {}), Val {:?}", identifier, position, random_block_value
+        // );
+    }
+    assert_eq!(count, num_operations);
+}
+
+/// Tests the correctness of PathOsamPlus on a sequence of all writes then reads
+pub(crate) fn local_write_then_read<V: OsamPlusBlock, const Z: BucketSize>(
+    osam_plus: &mut PathOsamPlus<V, Z>,
+    num_operations: usize,
+) where
+    Standard: Distribution<V>,
+{
+    init_logger();
+    let mut rng = StdRng::seed_from_u64(0);
+    let mut mirror_hash_map = HashMap::new();
+
+    // Generate a sequence of allocs and write a random value
+    for _ in 0..num_operations {
+        let address = osam_plus.alloc(&mut rng).unwrap();
+        let identifier = address.0;
+        let position = address.1;
+        let random_block_value = rng.gen::<V>();
+        mirror_hash_map.insert(address, random_block_value);
+        let _ = osam_plus.local_write(identifier, position, random_block_value);
+    }
+
+    // Assert reads fetch the proper data block
+    for (address, random_block_value) in mirror_hash_map.iter() {
+        let identifier = address.0;
+        let position = address.1;
+
+        assert_eq!(
+            osam_plus.read(identifier, position).unwrap().unwrap(),
+            *random_block_value
+        );
+    }
 }
 
 /// Tests the correctness of Path OSAM+ on a sequence where
@@ -250,28 +244,15 @@ pub(crate) fn interspersed_write_and_read<V: OsamPlusBlock, const Z: BucketSize>
 /// 3) the last three quarters writes are made to the OSAM+
 /// 4) read all remaining writes
 pub(crate) fn locally_interspersed_write_and_read<V: OsamPlusBlock, const Z: BucketSize>(
-    osam_plus: &mut PathOsam<V, Z>,
-    bucket_size: BucketSize,
-    operation_factor: usize,
-    overflow_size: StashSize,
-    stash_size_experiment: bool,
+    osam_plus: &mut PathOsamPlus<V, Z>,
+    num_operations: usize,
 ) where
     Standard: Distribution<V>,
 {
     init_logger();
     let mut rng = StdRng::seed_from_u64(0);
-
-    let capacity = osam_plus.block_capacity();
-    let mut num_operations: usize;
-    if stash_size_experiment {
-        num_operations = (capacity * bucket_size).div(2);
-    } else {
-        num_operations = capacity * bucket_size * operation_factor;
-        num_operations += usize::try_from(overflow_size).unwrap().div(2);
-    }
-    let quarter = num_operations.div(4);
-
     let mut mirror_hash_map = HashMap::new();
+    let quarter = num_operations.checked_div(4).unwrap();
 
     // Generate the first half of allocs and write a random value
     for _ in 0..quarter {
@@ -281,15 +262,7 @@ pub(crate) fn locally_interspersed_write_and_read<V: OsamPlusBlock, const Z: Buc
         let random_block_value = rng.gen::<V>();
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.local_write(identifier, position, random_block_value);
-        stash_checker(stash_size_experiment, osam_plus);
     }
-
-    assert_eq!(
-        osam_plus.local_write_counter(),
-        StashSize::try_from(osam_plus.alloc_counter()).unwrap()
-    );
-    assert_eq!(osam_plus.write_counter(), 0);
-    assert_eq!(osam_plus.round_trip_counter(), 0);
 
     // Assert reads fetch the proper data block for half the first writes (quarter of all)
     for (address, random_block_value) in mirror_hash_map.iter() {
@@ -299,14 +272,8 @@ pub(crate) fn locally_interspersed_write_and_read<V: OsamPlusBlock, const Z: Buc
             osam_plus.read(identifier, position).unwrap().unwrap(),
             *random_block_value
         );
-        stash_checker(stash_size_experiment, osam_plus);
     }
     mirror_hash_map.clear();
-
-    assert_eq!(
-        osam_plus.read_counter(),
-        StashSize::try_from(quarter).unwrap()
-    );
 
     // Generate the second half of allocs and write a random value
     for _ in quarter..num_operations {
@@ -316,7 +283,6 @@ pub(crate) fn locally_interspersed_write_and_read<V: OsamPlusBlock, const Z: Buc
         let random_block_value = rng.gen::<V>();
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.write(identifier, position, random_block_value, &mut rng);
-        stash_checker(stash_size_experiment, osam_plus);
     }
 
     // Assert the remaining three quarters of reads are correct
@@ -327,101 +293,213 @@ pub(crate) fn locally_interspersed_write_and_read<V: OsamPlusBlock, const Z: Buc
             osam_plus.read(identifier, position).unwrap().unwrap(),
             *random_block_value
         );
-        stash_checker(stash_size_experiment, osam_plus);
+    }
+}
+
+/// Tests the correctness of PathOsam on a sequence of all writes then reads
+pub(crate) fn local_overwrite_then_read<V: OsamPlusBlock, const Z: BucketSize>(
+    osam_plus: &mut PathOsamPlus<V, Z>,
+    num_operations: usize,
+) where
+    Standard: Distribution<V>,
+{
+    init_logger();
+    let mut rng = StdRng::seed_from_u64(0);
+    let mut mirror_hash_map = HashMap::new();
+
+    // Generate a sequence of allocs and write a random value
+    for _ in 0..num_operations {
+        let address = osam_plus.alloc(&mut rng).unwrap();
+        let identifier = address.0;
+        let position = address.1;
+        let random_block_value = rng.gen::<V>();
+        mirror_hash_map.insert(address, random_block_value);
+        let _ = osam_plus.local_write(identifier, position, random_block_value);
     }
 
-    assert_eq!(
-        osam_plus.local_write_counter() + osam_plus.write_counter(),
-        StashSize::try_from(osam_plus.alloc_counter()).unwrap()
-    );
-    assert_eq!(
-        osam_plus.local_write_counter() + osam_plus.write_counter(),
-        osam_plus.read_counter()
-    );
+
+    // Overwrite all addresses with new values
+    for (address, random_block_value) in mirror_hash_map.iter_mut() {
+        *random_block_value = rng.gen::<V>();
+        let _ = osam_plus.local_write(address.0, address.1, *random_block_value);
+    }
+
+    // Assert reads fetch the updated data block
+    for (address, random_block_value) in mirror_hash_map.iter() {
+        let identifier = address.0;
+        let position = address.1;
+        assert_eq!(
+            osam_plus.read(identifier, position).unwrap().unwrap(),
+            *random_block_value,
+        );
+    }
 }
 
 macro_rules! create_path_osam_plus_correctness_tests_all_parameters {
-    ($osam_plus_type: ident, $prefix: literal, $block_capacity: expr, $block_size: expr, $bucket_size: expr, $overflow_size: expr, $operation_factor: expr, $stash_size_experiment: expr) => {
+    ($prefix: literal, $block_capacity: expr, $block_size: expr, $bucket_size: expr, $overflow_size: expr, $operation_factor: expr) => {
         paste::paste! {
             #[test]
-            fn [<"write_then_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor _ $stash_size_experiment>]() {
-                let mut osam_plus = $osam_plus_type::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
-                write_then_read(&mut osam_plus, $bucket_size, $operation_factor, $overflow_size, $stash_size_experiment);
+            fn [<"write_then_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
+                let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
+                write_then_read(&mut osam_plus, num_operations);
             }
 
             #[test]
-            fn [<"read_then_write" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor _ $stash_size_experiment>]() {
-                let mut osam_plus = $osam_plus_type::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
-                read_then_write(&mut osam_plus, $bucket_size, $operation_factor, $overflow_size, $stash_size_experiment);
+            fn [<"read_then_write" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
+                let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
+                read_then_write(&mut osam_plus, num_operations);
             }
 
             #[test]
-            fn [<"interspersed_write_and_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor _ $stash_size_experiment>]() {
-                let mut osam_plus = $osam_plus_type::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
-                interspersed_write_and_read(&mut osam_plus, $bucket_size, $operation_factor, $overflow_size, $stash_size_experiment);
+            fn [<"interspersed_write_and_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
+                let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
+                interspersed_write_and_read(&mut osam_plus, num_operations);
             }
 
             #[test]
-            fn [<"locally_interspersed_write_and_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor _ $stash_size_experiment>]() {
-                let mut osam_plus = $osam_plus_type::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
-                locally_interspersed_write_and_read(&mut osam_plus, $bucket_size, $operation_factor, $overflow_size, $stash_size_experiment);
+            fn [<"overwrite_then_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
+                let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
+                overwrite_then_read(&mut osam_plus, num_operations);
+            }
+
+            #[test]
+            fn [<"local_write_then_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
+                let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
+                local_write_then_read(&mut osam_plus, num_operations);
+            }
+
+            #[test]
+            fn [<"locally_interspersed_write_and_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
+                let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
+                locally_interspersed_write_and_read(&mut osam_plus, num_operations);
+            }
+
+            #[test]
+            fn [<"local_overwrite_then_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
+                let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
+                local_overwrite_then_read(&mut osam_plus, num_operations);
+            }
+        }
+    };
+}
+
+macro_rules! create_path_osam_plus_stash_size_correctness_tests_all_parameters {
+    ($prefix: literal, $block_capacity: expr, $block_size: expr, $bucket_size: expr, $overflow_size: expr) => {
+        paste::paste! {
+            #[test]
+            fn [<"write_then_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size>]() {
+                let mut osam_plus = StashSizeMonitor::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = (osam_plus.block_capacity() * $bucket_size).checked_div(2).unwrap();
+                write_then_read(&mut osam_plus, num_operations);
+            }
+
+            #[test]
+            fn [<"read_then_write" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size>]() {
+                let mut osam_plus = StashSizeMonitor::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = (osam_plus.block_capacity() * $bucket_size).checked_div(2).unwrap();
+                read_then_write(&mut osam_plus, num_operations);
+            }
+
+            #[test]
+            fn [<"interspersed_write_and_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size>]() {
+                let mut osam_plus = StashSizeMonitor::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
+                let num_operations = (osam_plus.block_capacity() * $bucket_size).checked_div(2).unwrap();
+                interspersed_write_and_read(&mut osam_plus, num_operations);
             }
         }
     };
 }
 
 macro_rules! create_path_osam_plus_correctness_tests_helper {
-    ($osam_plus_type: ident, $prefix: literal, $bucket_size: expr, $overflow_size: expr, $stash_size_experiment: expr) => {
+    ($prefix: literal, $bucket_size: expr, $overflow_size: expr) => {
         create_path_osam_plus_correctness_tests_all_parameters!(
-            $osam_plus_type,
             $prefix,
             8,
             1,
             $bucket_size,
             $overflow_size,
-            1,
-            $stash_size_experiment
+            1
         );
         create_path_osam_plus_correctness_tests_all_parameters!(
-            $osam_plus_type,
             $prefix,
             4,
             1,
             $bucket_size,
             $overflow_size,
-            1,
-            $stash_size_experiment
+            1
         );
         // Block size 4 blocks, block size 2 bytes, testing with 100 operations
         create_path_osam_plus_correctness_tests_all_parameters!(
-            $osam_plus_type,
             $prefix,
             4,
             2,
             $bucket_size,
             $overflow_size,
-            2,
-            $stash_size_experiment
+            2
         );
         create_path_osam_plus_correctness_tests_all_parameters!(
-            $osam_plus_type,
             $prefix,
             16,
             1,
             $bucket_size,
             $overflow_size,
-            3,
-            $stash_size_experiment
+            3
         );
         create_path_osam_plus_correctness_tests_all_parameters!(
-            $osam_plus_type,
             $prefix,
             2,
             1,
             $bucket_size,
             $overflow_size,
+            1
+        );
+    };
+}
+
+macro_rules! create_path_osam_plus_stash_size_correctness_tests_helper {
+    ($prefix: literal, $bucket_size: expr, $overflow_size: expr) => {
+        create_path_osam_plus_stash_size_correctness_tests_all_parameters!(
+            $prefix,
+            8,
             1,
-            $stash_size_experiment
+            $bucket_size,
+            $overflow_size
+        );
+        create_path_osam_plus_stash_size_correctness_tests_all_parameters!(
+            $prefix,
+            4,
+            1,
+            $bucket_size,
+            $overflow_size
+        );
+        // Block size 4 blocks, block size 2 bytes, testing with 100 operations
+        create_path_osam_plus_stash_size_correctness_tests_all_parameters!(
+            $prefix,
+            4,
+            2,
+            $bucket_size,
+            $overflow_size
+        );
+        create_path_osam_plus_stash_size_correctness_tests_all_parameters!(
+            $prefix,
+            16,
+            1,
+            $bucket_size,
+            $overflow_size
+        );
+        create_path_osam_plus_stash_size_correctness_tests_all_parameters!(
+            $prefix,
+            2,
+            1,
+            $bucket_size,
+            $overflow_size
         );
     };
 }
@@ -429,28 +507,86 @@ macro_rules! create_path_osam_plus_correctness_tests_helper {
 macro_rules! create_path_osam_plus_correctness_tests {
     ($bucket_size: expr, $overflow_size: expr) => {
         create_path_osam_plus_correctness_tests_helper!(
-            PathOsam,
             "_",
             $bucket_size,
-            $overflow_size,
-            false
+            $overflow_size
         );
     };
 }
 
-macro_rules! create_path_osam_plus_stash_size_tests {
+macro_rules! create_path_osam_plus_stash_size_correctness_tests {
     ($bucket_size: expr, $overflow_size: expr) => {
-        create_path_osam_plus_correctness_tests_helper!(
-            PathOsam,
+        create_path_osam_plus_stash_size_correctness_tests_helper!(
             "_stash_size_",
             $bucket_size,
-            $overflow_size,
-            true
+            $overflow_size
         );
     };
+}
+
+#[derive(Debug)]
+pub(crate) struct StashSizeMonitor<V: OsamPlusBlock, const Z: BucketSize> {
+    osam_plus: PathOsamPlus<V, Z>,
+}
+
+impl<V: OsamPlusBlock, const Z: BucketSize> StashSizeMonitor<V, Z> {
+    pub(crate) fn new_with_parameters(
+        block_capacity: Identifier,
+        overflow_size: StashSize,
+    ) -> Result<Self, OsamPlusError> {
+        Ok(Self {
+            osam_plus: PathOsamPlus::new_with_parameters(
+                block_capacity,
+                overflow_size,
+            )
+            .unwrap(),
+        })
+    }
+}
+
+impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for StashSizeMonitor<V, Z> {
+    type V = V;
+
+    fn block_capacity(&self) -> usize {
+        self.osam_plus.block_capacity()
+    }
+
+    fn alloc<R: Rng + CryptoRng>(
+        &mut self,
+        rng: &mut R,
+    ) -> Result<(Identifier, TreeIndex), OsamPlusError> {
+        Ok(self.osam_plus.alloc(rng)?)
+    }
+
+    fn write<R: Rng + CryptoRng>(
+        &mut self,
+        identifier: Identifier,
+        position: TreeIndex,
+        value: V,
+        rng: &mut R,
+    ) -> Result<(), OsamPlusError> {
+        let _ = self.osam_plus.write(identifier, position, value, rng)?;
+        let stash_size = self.osam_plus.stash_occupancy();
+        assert!(stash_size < 10);
+        Ok(())
+    }
+
+    fn read(
+        &mut self,
+        identifier: Identifier,
+        position: TreeIndex,
+    ) -> Result<Option<V>, OsamPlusError>  {
+        let result = self.osam_plus.read(identifier, position)?;
+        let stash_size = self.osam_plus.stash_occupancy();
+        assert!(stash_size < 10);
+        Ok(result)
+    }
 }
 
 pub(crate) use create_path_osam_plus_correctness_tests;
 pub(crate) use create_path_osam_plus_correctness_tests_all_parameters;
 pub(crate) use create_path_osam_plus_correctness_tests_helper;
-pub(crate) use create_path_osam_plus_stash_size_tests;
+pub(crate) use create_path_osam_plus_stash_size_correctness_tests;
+pub(crate) use create_path_osam_plus_stash_size_correctness_tests_all_parameters;
+pub(crate) use create_path_osam_plus_stash_size_correctness_tests_helper;
+

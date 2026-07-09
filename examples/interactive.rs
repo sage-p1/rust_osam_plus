@@ -8,7 +8,7 @@
 //! A simple interactive demonstration of OSAM+.
 
 use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
-use osam_plus::PathOsam;
+use osam_plus::{OsamPlus, PathOsamPlus};
 use rand::rngs::OsRng;
 use rustyline::history::FileHistory;
 use rustyline::Editor;
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let capacity = parse_u64("\nEnter a power of two:", &mut rl)?;
 
     // Initialize a Path OSAM+ storing `capacity` u64s.
-    let mut osam_plus = PathOsam::<u64, DEFAULT_BLOCKS_PER_BUCKET>::new_with_parameters(
+    let mut osam_plus = PathOsamPlus::<u64, DEFAULT_BLOCKS_PER_BUCKET>::new_with_parameters(
         capacity,
         DEFAULT_STASH_OVERFLOW_SIZE,
     )?;
