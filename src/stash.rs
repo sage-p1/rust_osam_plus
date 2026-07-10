@@ -196,16 +196,18 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         Ok(())
     }
 
-    // Downloads all blocks along the eviction path to the stash. These blocks are
-    // added to the stash wherever free space exists rather than the reserved `path_size`
-    // slots. Skips any buckets along the first path read, as it is known those buckets 
-    // are already empty. At least the root bucket is skipped
+    // Downloads all blocks along the eviction path to the stash. These blocks are added
+    // left to right in the stash wherever free space exists instead of occupying a reserved
+    // `path_size` slots. Skips any buckets along the first path read, as it is known those  
+    // buckets are already empty. At least the root bucket is skipped.
+    // It is important that any blocks added here are to the right of any blocks currently
+    // in the stash.
     pub fn read_from_eviction_path<const Z: BucketSize>(
         &mut self,
         physical_memory: &mut [Bucket<V, Z>],
         read_position: TreeIndex,
         evict_position: TreeIndex,
-    ) -> Result<(), OsamPlusError> {
+    ) -> Result<usize, OsamPlusError> {
         let height = evict_position.ct_depth();
 
         // Determine the first dummy index in the stash as all blocks to the right
@@ -219,11 +221,15 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
             assigned |= should_assign;
             if should_assign.into() {
                 dummy_index = i;
+                break;
             }
         }
 
+        // Save the index of where the evict path begins in the stash
+        let evict_path_index = dummy_index;
+
         // Download physical memory to stash and replace with dummy blocks
-        for i in (1..(self.path_size / u64::try_from(Z)?)).rev() {
+        for i in 1..(self.path_size / u64::try_from(Z)?) {
             let read_index = read_position.ct_node_on_path(i, height);
             let evict_index = evict_position.ct_node_on_path(i, height);
             
@@ -253,7 +259,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
             }
         }
 
-        Ok(())
+        Ok(evict_path_index)
     }
 
     // Write block to stash
@@ -329,7 +335,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
     }
 
     // Delete stale versions of blocks with multiple entries
-    pub fn merge(&mut self) -> Result<(), OsamPlusError> {
+    pub fn merge(&mut self, evict_path_index: usize) -> Result<(), OsamPlusError> {
         // This function is used after `read_from_path` is called and the first `path_size`
         // indices are occupied with real blocks. It collects the newest version of blocks 
         // from the stash and then reinserts them from left to right. Since all the keys are
@@ -339,8 +345,8 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
 
         // Map identifiers to blocks to delete stale versions. Start with blocks that
         // have remained in the stash since these are more recent than anything downloaded
-        // from the server.
-        for i in (usize::try_from(self.path_size)?..self.blocks.len()).rev() {
+        // from the server. 
+        for i in (usize::try_from(self.path_size)?..evict_path_index).rev() {
             let block = self.blocks[i];
             identifier_map.entry(block.identifier).or_insert(block);
             self.blocks[i] = PathOsamPlusBlock::<V>::dummy();
@@ -348,7 +354,16 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
 
         // Then, process blocks from the downloaded path from root to leaf,
         // as the latest version of a block is kept closest to the root.
+        // Duplicates here will be replaced by their newer counterparts.
         for i in 0..usize::try_from(self.path_size)? {
+            let block = self.blocks[i];
+            identifier_map.entry(block.identifier).or_insert(block);
+            self.blocks[i] = PathOsamPlusBlock::<V>::dummy();
+        }
+
+        // Process blocks from the evict path so that more recent versions from the 
+        // stash or closer to the root take precedence.
+        for i in evict_path_index..self.blocks.len() {
             let block = self.blocks[i];
             identifier_map.entry(block.identifier).or_insert(block);
             self.blocks[i] = PathOsamPlusBlock::<V>::dummy();

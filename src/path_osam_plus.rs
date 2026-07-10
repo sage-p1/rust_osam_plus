@@ -311,22 +311,22 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
 
+        // Add new block to stash by replacing a dummy block
+        self.stash.write_to_stash(identifier, position, value)?;
+
         // Read a dummy path to make reads and writes indistinguishable
         let dummy_position: TreeIndex = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
         assert!(dummy_position.is_leaf(self.height));
         self.stash
             .read_from_path(&mut self.physical_memory, dummy_position)?;
-
+    
         // Read eviction path to stash
         let evict_position = self.evict_position()?;
-        self.stash
+        let evict_path_index = self.stash
             .read_from_eviction_path(&mut self.physical_memory, dummy_position, evict_position)?;
 
-        // Add new block to stash by replacing a dummy block
-        self.stash.write_to_stash(identifier, position, value)?;
-
         // Remove duplicates
-        let _ = self.stash.merge();
+        let _ = self.stash.merge(evict_path_index);
 
         // Evict blocks from the stash along a deterministic path
         self.stash
@@ -355,11 +355,11 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
 
         // Read eviction path to stash
         let evict_position = self.evict_position()?;
-        self.stash
+        let evict_path_index = self.stash
             .read_from_eviction_path(&mut self.physical_memory, position, evict_position)?;
 
         // Remove duplicates
-        let _ = self.stash.merge();
+        let _ = self.stash.merge(evict_path_index);
 
         // Remove block from stash (and replace with dummy)
         let result = self.stash.read_from_stash(identifier)?;

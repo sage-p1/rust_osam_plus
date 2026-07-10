@@ -160,6 +160,7 @@ pub(crate) fn interspersed_write_and_read<T: OsamPlus>(
 pub(crate) fn overwrite_then_read<T: OsamPlus>(
     osam_plus: &mut T,
     num_operations: usize,
+    overwrite_cycles: usize,
 ) where
     Standard: Distribution<T::V>,
 {
@@ -175,34 +176,25 @@ pub(crate) fn overwrite_then_read<T: OsamPlus>(
         let random_block_value = rng.gen::<T::V>();
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.write(identifier, position, random_block_value, &mut rng);
-        // println!("OLD: Address ({}, {}) to value {:?}", identifier, position, random_block_value);
     }
-
-    // println!();
 
     // Overwrite all addresses with new values
-    for (address, random_block_value) in mirror_hash_map.iter_mut() {
-        *random_block_value = rng.gen::<T::V>();
-        // println!("NEW: Address ({}, {}) to value {:?}", address.0, address.1, random_block_value);
-        let _ = osam_plus.write(address.0, address.1, *random_block_value, &mut rng);
-    }
+    for _ in 0..overwrite_cycles {
+        for (address, random_block_value) in mirror_hash_map.iter_mut() {
+            *random_block_value = rng.gen::<T::V>();
+            let _ = osam_plus.write(address.0, address.1, *random_block_value, &mut rng);
+        }
+    }   
 
     // Assert reads fetch the updated data block
-    let mut count = 0;
     for (address, random_block_value) in mirror_hash_map.iter() {
         let identifier = address.0;
         let position = address.1;
-        let res = osam_plus.read(identifier, position).unwrap().unwrap();
-        if res == *random_block_value {
-            count += 1;
-        }
-        // assert_eq!(
-        //     osam_plus.read(identifier, position).unwrap().unwrap(),
-        //     *random_block_value,
-        //     "DANG: Address ({}, {}), Val {:?}", identifier, position, random_block_value
-        // );
+        assert_eq!(
+            osam_plus.read(identifier, position).unwrap().unwrap(),
+            *random_block_value
+        );
     }
-    assert_eq!(count, num_operations);
 }
 
 /// Tests the correctness of PathOsamPlus on a sequence of all writes then reads
@@ -363,7 +355,8 @@ macro_rules! create_path_osam_plus_correctness_tests_all_parameters {
             fn [<"overwrite_then_read" $prefix $block_capacity _ $block_size _ $bucket_size _ $overflow_size _ $operation_factor>]() {
                 let mut osam_plus = PathOsamPlus::<BlockValue<$block_size>, $bucket_size>::new_with_parameters($block_capacity, $overflow_size).unwrap();
                 let num_operations = osam_plus.block_capacity() * $bucket_size * $operation_factor + usize::try_from($overflow_size).unwrap().checked_div(2).unwrap();
-                overwrite_then_read(&mut osam_plus, num_operations);
+                let overwrite_cycles = $operation_factor;
+                overwrite_then_read(&mut osam_plus, num_operations, overwrite_cycles);
             }
 
             #[test]
