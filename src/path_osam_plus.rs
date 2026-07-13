@@ -360,7 +360,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         let evict_position = self.evict_position()?;
         let evict_path_index = self.stash.read_from_eviction_path(
             &mut self.physical_memory,
-            dummy_position,
+            position,
             evict_position,
         )?;
 
