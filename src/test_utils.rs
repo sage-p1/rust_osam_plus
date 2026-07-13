@@ -421,7 +421,6 @@ macro_rules! create_path_osam_plus_correctness_tests_helper {
             $overflow_size,
             1
         );
-        // Block size 4 blocks, block size 2 bytes, testing with 100 operations
         create_path_osam_plus_correctness_tests_all_parameters!(
             $prefix,
             4,
@@ -465,7 +464,6 @@ macro_rules! create_path_osam_plus_stash_size_correctness_tests_helper {
             $bucket_size,
             $overflow_size
         );
-        // Block size 4 blocks, block size 2 bytes, testing with 100 operations
         create_path_osam_plus_stash_size_correctness_tests_all_parameters!(
             $prefix,
             4,

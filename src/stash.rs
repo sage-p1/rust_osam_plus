@@ -165,7 +165,6 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
                 &mut physical_memory[usize::try_from(position.ct_node_on_path(depth, height))?];
             for slot_number in 0..Z {
                 let stash_index = (usize::try_from(depth)?) * Z + slot_number;
-
                 bucket_to_write.blocks[slot_number] = self.blocks[stash_index];
                 self.blocks[stash_index] = PathOsamPlusBlock::<V>::dummy();
             }
