@@ -17,7 +17,7 @@ use bit_reverse::ParallelReverse;
 use rand::{CryptoRng, Rng};
 use std::collections::HashMap;
 
-/// The parameter "Z" from the Path OSAM+ literature that sets the number of blocks per bucket; typical values are 3 or 4.
+/// The parameter "Z" from the Path ORAM literature that sets the number of blocks per bucket; typical values are 3 or 4.
 /// Here we adopt the more conservative setting of 4.
 pub const DEFAULT_BLOCKS_PER_BUCKET: BucketSize = 4;
 
@@ -126,7 +126,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
         let stash = ObliviousStash::new(path_size, overflow_size)?;
 
         // physical_memory holds `block_capacity` buckets, each storing up to Z blocks.
-        // The number of leaves is `block_capacity` / 2, which the original Path OSAM+ paper's experiments
+        // The number of leaves is `block_capacity` / 2, which the original Path ORAM paper's experiments
         // found was sufficient to keep the stash size small with high probability.
         let mut physical_memory = Vec::new();
         physical_memory.resize(usize::try_from(number_of_nodes)?, Bucket::<V, Z>::default());
@@ -319,11 +319,14 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         assert!(dummy_position.is_leaf(self.height));
         self.stash
             .read_from_path(&mut self.physical_memory, dummy_position)?;
-    
+
         // Read eviction path to stash
         let evict_position = self.evict_position()?;
-        let evict_path_index = self.stash
-            .read_from_eviction_path(&mut self.physical_memory, dummy_position, evict_position)?;
+        let evict_path_index = self.stash.read_from_eviction_path(
+            &mut self.physical_memory,
+            dummy_position,
+            evict_position,
+        )?;
 
         // Remove duplicates
         let _ = self.stash.merge(evict_path_index);
@@ -355,8 +358,11 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
 
         // Read eviction path to stash
         let evict_position = self.evict_position()?;
-        let evict_path_index = self.stash
-            .read_from_eviction_path(&mut self.physical_memory, position, evict_position)?;
+        let evict_path_index = self.stash.read_from_eviction_path(
+            &mut self.physical_memory,
+            dummy_position,
+            evict_position,
+        )?;
 
         // Remove duplicates
         let _ = self.stash.merge(evict_path_index);

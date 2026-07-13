@@ -19,7 +19,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 
 const CAPACITIES_TO_BENCHMARK: [Identifier; 3] = [1 << 14, 1 << 16, 1 << 20];
 
-// Here, all benchmarks are run for linear and path OSAM+s, and block sizes of 64 and 4096.
+// Here, all benchmarks are run for OSAM+ and block sizes of 64 and 4096.
 criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(Duration::new(0, 1_000_000_00)).measurement_time(Duration::new(0, 1_000_000_00)).sample_size(10);

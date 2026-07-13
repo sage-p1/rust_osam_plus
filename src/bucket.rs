@@ -5,17 +5,17 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! Block and bucket structures for Path OSAM+.
+//! Block and bucket structures for OSAM+.
 
+use crate::BucketSize;
+use crate::{utils::TreeIndex, Identifier};
 use crate::{BlockSize, OsamPlusBlock};
-use subtle::{Choice, ConditionallySelectable};
 use rand::{
     distributions::{Distribution, Standard},
     Rng,
 };
-use crate::BucketSize;
-use crate::{utils::TreeIndex, Identifier};
 use subtle::ConstantTimeEq;
+use subtle::{Choice, ConditionallySelectable};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// An `OsamPlusBlock` consisting of unstructured bytes.
@@ -59,7 +59,7 @@ impl<const B: BlockSize> Distribution<BlockValue<B>> for Standard {
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
-/// A Path OSAM+ block combines an `OsamPlusBlock` V with two metadata fields; its OSAM+ `identifier` and its `position` in the tree.
+/// An OSAM+ block combines an `OsamPlusBlock` V with two metadata fields; its OSAM+ `identifier` and its `position` in the tree.
 pub(crate) struct PathOsamPlusBlock<V> {
     pub value: V,
     pub identifier: Identifier,
@@ -113,9 +113,9 @@ impl<V: ConditionallySelectable> ConditionallySelectable for PathOsamPlusBlock<V
 }
 
 #[derive(Clone, Copy, PartialEq)]
-/// A Path OSAM+ bucket.
+/// A OSAM+ bucket.
 pub struct Bucket<V: OsamPlusBlock, const Z: BucketSize> {
-    /// The Path OSAM+ blocks stored by this bucket.
+    /// The OSAM+ blocks stored by this bucket.
     pub(crate) blocks: [PathOsamPlusBlock<V>; Z],
 }
 

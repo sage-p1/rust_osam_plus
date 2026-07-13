@@ -33,11 +33,9 @@ pub(crate) fn init_logger() {
     })
 }
 
-/// Tests the correctness of PathOsam on a sequence of all writes then reads
-pub(crate) fn write_then_read<T: OsamPlus>(
-    osam_plus: &mut T,
-    num_operations: usize,
-) where
+/// Tests the correctness of OSAM+ on a sequence of all writes then reads
+pub(crate) fn write_then_read<T: OsamPlus>(osam_plus: &mut T, num_operations: usize)
+where
     Standard: Distribution<T::V>,
 {
     init_logger();
@@ -66,10 +64,8 @@ pub(crate) fn write_then_read<T: OsamPlus>(
 }
 
 /// Tests the correctness of Path OSAM+ on a sequence of all reads then writes
-pub(crate) fn read_then_write<T: OsamPlus>(
-    osam_plus: &mut T,
-    num_operations: usize,
-) where
+pub(crate) fn read_then_write<T: OsamPlus>(osam_plus: &mut T, num_operations: usize)
+where
     Standard: Distribution<T::V>,
 {
     init_logger();
@@ -90,10 +86,8 @@ pub(crate) fn read_then_write<T: OsamPlus>(
 /// 2) read half of these writes (quarter of all writes)
 /// 3) the second half of writes are done
 /// 4) read all remaining writes
-pub(crate) fn interspersed_write_and_read<T: OsamPlus>(
-    osam_plus: &mut T,
-    num_operations: usize,
-) where
+pub(crate) fn interspersed_write_and_read<T: OsamPlus>(osam_plus: &mut T, num_operations: usize)
+where
     Standard: Distribution<T::V>,
 {
     init_logger();
@@ -156,7 +150,7 @@ pub(crate) fn interspersed_write_and_read<T: OsamPlus>(
     }
 }
 
-/// Tests the correctness of PathOsam on a sequence of all writes then reads
+/// Tests the correctness of Path OSAM+ where the values of an address are overwritten several times
 pub(crate) fn overwrite_then_read<T: OsamPlus>(
     osam_plus: &mut T,
     num_operations: usize,
@@ -184,7 +178,7 @@ pub(crate) fn overwrite_then_read<T: OsamPlus>(
             *random_block_value = rng.gen::<T::V>();
             let _ = osam_plus.write(address.0, address.1, *random_block_value, &mut rng);
         }
-    }   
+    }
 
     // Assert reads fetch the updated data block
     for (address, random_block_value) in mirror_hash_map.iter() {
@@ -288,7 +282,7 @@ pub(crate) fn locally_interspersed_write_and_read<V: OsamPlusBlock, const Z: Buc
     }
 }
 
-/// Tests the correctness of PathOsam on a sequence of all writes then reads
+/// Tests the correctness of Path OSAM+ where the values of an address are locally overwritten several times
 pub(crate) fn local_overwrite_then_read<V: OsamPlusBlock, const Z: BucketSize>(
     osam_plus: &mut PathOsamPlus<V, Z>,
     num_operations: usize,
@@ -308,7 +302,6 @@ pub(crate) fn local_overwrite_then_read<V: OsamPlusBlock, const Z: BucketSize>(
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.local_write(identifier, position, random_block_value);
     }
-
 
     // Overwrite all addresses with new values
     for (address, random_block_value) in mirror_hash_map.iter_mut() {
@@ -499,11 +492,7 @@ macro_rules! create_path_osam_plus_stash_size_correctness_tests_helper {
 
 macro_rules! create_path_osam_plus_correctness_tests {
     ($bucket_size: expr, $overflow_size: expr) => {
-        create_path_osam_plus_correctness_tests_helper!(
-            "_",
-            $bucket_size,
-            $overflow_size
-        );
+        create_path_osam_plus_correctness_tests_helper!("_", $bucket_size, $overflow_size);
     };
 }
 
@@ -517,6 +506,7 @@ macro_rules! create_path_osam_plus_stash_size_correctness_tests {
     };
 }
 
+// Interface that shares OsamPlus trait to ensure the stash does not overflow with small enough parameters
 #[derive(Debug)]
 pub(crate) struct StashSizeMonitor<V: OsamPlusBlock, const Z: BucketSize> {
     osam_plus: PathOsamPlus<V, Z>,
@@ -528,11 +518,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> StashSizeMonitor<V, Z> {
         overflow_size: StashSize,
     ) -> Result<Self, OsamPlusError> {
         Ok(Self {
-            osam_plus: PathOsamPlus::new_with_parameters(
-                block_capacity,
-                overflow_size,
-            )
-            .unwrap(),
+            osam_plus: PathOsamPlus::new_with_parameters(block_capacity, overflow_size).unwrap(),
         })
     }
 }
@@ -568,7 +554,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for StashSizeMonitor<V, Z> 
         &mut self,
         identifier: Identifier,
         position: TreeIndex,
-    ) -> Result<Option<V>, OsamPlusError>  {
+    ) -> Result<Option<V>, OsamPlusError> {
         let result = self.osam_plus.read(identifier, position)?;
         let stash_size = self.osam_plus.stash_occupancy();
         assert!(stash_size < 10);
@@ -582,4 +568,3 @@ pub(crate) use create_path_osam_plus_correctness_tests_helper;
 pub(crate) use create_path_osam_plus_stash_size_correctness_tests;
 pub(crate) use create_path_osam_plus_stash_size_correctness_tests_all_parameters;
 pub(crate) use create_path_osam_plus_stash_size_correctness_tests_helper;
-

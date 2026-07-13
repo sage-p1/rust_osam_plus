@@ -7,12 +7,12 @@
 
 //! A trait representing a Path OSAM+ stash.
 
-use std::collections::HashMap;
 use crate::{
     bucket::{Bucket, PathOsamPlusBlock},
     utils::{bitonic_sort_by_keys, CompleteBinaryTreeIndex, TreeIndex},
     BucketSize, Identifier, OsamPlusBlock, OsamPlusError, StashSize,
 };
+use std::collections::HashMap;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 const STASH_GROWTH_INCREMENT: usize = 10;
@@ -33,7 +33,8 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
 impl<V: OsamPlusBlock> ObliviousStash<V> {
     // Create a stash of size `path_size + overflow_size`. The first `path_size` indices
     // are used for downloading and uploading paths from the server. Excluding the first
-    // `path_size` indices, the stash is filled out by real blocks from left to right
+    // `path_size` indices, the stash is filled out by real blocks from left to right.
+    // Downloaded eviction paths are the rightmost blocks of the stash.
     pub fn new(path_size: StashSize, overflow_size: StashSize) -> Result<Self, OsamPlusError> {
         let num_stash_blocks: usize = (path_size + overflow_size).try_into()?;
 
@@ -197,11 +198,10 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
     }
 
     // Downloads all blocks along the eviction path to the stash. These blocks are added
-    // left to right in the stash wherever free space exists instead of occupying a reserved
-    // `path_size` slots. Skips any buckets along the first path read, as it is known those  
-    // buckets are already empty. At least the root bucket is skipped.
-    // It is important that any blocks added here are to the right of any blocks currently
-    // in the stash.
+    // to the right of any real blocks currently in the stash. They do not occupy a reserved
+    // `path_size` slots. Skips any buckets along the first path read, as it is known those
+    // buckets are already empty. At least the root bucket is skipped. The path is downloaded
+    // in root-to-leaf bucket order from left to right.
     pub fn read_from_eviction_path<const Z: BucketSize>(
         &mut self,
         physical_memory: &mut [Bucket<V, Z>],
@@ -232,13 +232,13 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         for i in 1..(self.path_size / u64::try_from(Z)?) {
             let read_index = read_position.ct_node_on_path(i, height);
             let evict_index = evict_position.ct_node_on_path(i, height);
-            
+
             // Ignore buckets that were downloaded in the first read
             if read_index.ct_ne(&evict_index).into() {
                 let evict_index = usize::try_from(evict_index)?;
                 let mut bucket = physical_memory[evict_index];
                 for slot_index in 0..Z {
-                    // Resize if too much data is downloaded
+                    // Resize if too much data is downloaded (stash overflow)
                     if dummy_index >= self.blocks.len() {
                         self.blocks.resize(
                             self.blocks.len() + STASH_GROWTH_INCREMENT,
@@ -337,15 +337,19 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
     // Delete stale versions of blocks with multiple entries
     pub fn merge(&mut self, evict_path_index: usize) -> Result<(), OsamPlusError> {
         // This function is used after `read_from_path` is called and the first `path_size`
-        // indices are occupied with real blocks. It collects the newest version of blocks 
+        // indices are occupied with real blocks. It collects the newest version of blocks
         // from the stash and then reinserts them from left to right. Since all the keys are
         // then sorted and assigned to buckets, temporarily writing the location where downloaded
         // blocks go is fine.
+
+        // Path OSAM+ enforces two rules about duplicates:
+        //  - On the server, the most recent versions of data blocks are kept closer to the root
+        //  - Buckets can have at most one version of a data block at any time.
         let mut identifier_map = HashMap::new();
 
         // Map identifiers to blocks to delete stale versions. Start with blocks that
         // have remained in the stash since these are more recent than anything downloaded
-        // from the server. 
+        // from the server.
         for i in (usize::try_from(self.path_size)?..evict_path_index).rev() {
             let block = self.blocks[i];
             identifier_map.entry(block.identifier).or_insert(block);
@@ -354,15 +358,16 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
 
         // Then, process blocks from the downloaded path from root to leaf,
         // as the latest version of a block is kept closest to the root.
-        // Duplicates here will be replaced by their newer counterparts.
+        // Outdated duplicates will be ignored here if they showed up in the stash
         for i in 0..usize::try_from(self.path_size)? {
             let block = self.blocks[i];
             identifier_map.entry(block.identifier).or_insert(block);
             self.blocks[i] = PathOsamPlusBlock::<V>::dummy();
         }
 
-        // Process blocks from the evict path so that more recent versions from the 
-        // stash or closer to the root take precedence.
+        // Process blocks from the evict path from root to leaf. This path is read last
+        // because the first path contains the root and possibly other buckets along
+        // this path, which may include the newest versions of repeat blocks.
         for i in evict_path_index..self.blocks.len() {
             let block = self.blocks[i];
             identifier_map.entry(block.identifier).or_insert(block);
@@ -378,10 +383,10 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
     }
 
     // Delete stale versions of blocks with multiple entries
-    pub fn local_merge(&mut self) -> Result<(), OsamPlusError>{
+    pub fn local_merge(&mut self) -> Result<(), OsamPlusError> {
         // The first `path_size` blocks in the stash are dummy and overwritten in `read_from_path`.
         // `local_merge` is `merge` but without reinserting blocks in the first `path_size` indices
-        // so real blocks aren't overwritten.
+        // so real blocks aren't overwritten when a path is downloaded.
         let mut identifier_map = HashMap::new();
 
         // Map identifiers to blocks to delete stale versions. Start with blocks that
@@ -393,7 +398,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
             self.blocks[i] = PathOsamPlusBlock::<V>::dummy();
         }
 
-        // Add all blocks besides dummy back to the stash, as because the first dummy block 
+        // Add all blocks besides dummy back to the stash, as because the first dummy block
         // appears to the right of all real blocks
         let mut i = usize::try_from(self.path_size)?;
         for block in identifier_map.values() {

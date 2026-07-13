@@ -18,14 +18,19 @@
 //!
 //! # Design
 //!
-//! This crate implements the Path OSAM+ protocol, with oblivious
-//! client data structures based on the [Oblix paper](https://people.eecs.berkeley.edu/~raluca/oblix.pdf).
-//! See the [Path OSAM+ retrospective paper](http://elaineshi.com/docs/pathoram-retro.pdf)
-//! for a high-level introduction to OSAM+ and Path OSAM+, and for more detailed references.
+//! This crate implements the Path OSAM+ protocol and is derived from
+//! [Facebook's Path ORAM](https://github.com/facebook/oram) implementation.
+//! See [Concrete OSAM](https://eprint.iacr.org/2026/451.pdf) for an introduction
+//! to the SAM+ and Path OSAM+ implementation. This work is adapted from the
+//! [OSAM Model](https://eprint.iacr.org/2024/1029.pdf).
+//! Facebook's original oblivious client data structures are based on the
+//! [Oblix paper](https://people.eecs.berkeley.edu/~raluca/oblix.pdf). See the
+//! [Path ORAM retrospective paper](http://elaineshi.com/docs/pathoram-retro.pdf)
+//! for a high-level introduction to Path ORAM. The SAM+ framework is adapted from
 //!
 //! # Example
 //!
-//! The below example reads a database from memory into an OSAM+, thus permitting secret-dependent accesses.
+//! The below example reads a database from memory into a Path OSAM+, thus permitting secret-dependent accesses.
 //!
 //! ```
 //! use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlus, PathOsamPlus, TreeIndex};
@@ -40,13 +45,13 @@
 //! let mut addresses: [(Identifier, TreeIndex); DB_SIZE as usize] =  
 //! [(Identifier::MAX, 0); DB_SIZE as usize];
 //!
-//! // Initialize an OSAM+ to store 64 blocks of 64 bytes each.
+//! // Initialize a Path OSAM+ to store 64 blocks of 64 bytes each.
 //! let mut osam_plus = PathOsamPlus::<
 //!     BlockValue<BLOCK_SIZE>,
 //!     DEFAULT_BLOCKS_PER_BUCKET,
 //!     >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
 //!
-//! // Read a database (here, an array of byte arrays) into the OSAM+.
+//! // Read a database (here, an array of byte arrays) into Path OSAM+.
 //! for (i, bytes) in DATABASE.iter().enumerate() {
 //!     let address = osam_plus.alloc(&mut rng)?;
 //!     addresses[i] = address;
@@ -69,13 +74,13 @@
 //!
 //! # Advanced
 //!
-//! OSAM+s can store arbitrary structs implementing `OsamPlusBlock`.
+//! Path OSAM+ can store arbitrary structs implementing `OsamPlusBlock`.
 //! We provide implementations of `OsamPlusBlock` for `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`,
 //! and `BlockValue<const B: BlockSize>`.
 //!
 //! The `DefaultOsam` used in the above example should have good performance in most use cases.
 //! But the underlying algorithms have several tunable parameters that impact performance.
-//! The following example instantiates the same OSAM+ struct as above, but using the `PathOsamPlus`
+//! The following example instantiates the same Path OSAM+ struct as above, but using the `PathOsamPlus`
 //! interface which exposes these parameters.
 //!
 //! ```
@@ -101,10 +106,10 @@
 
 #![warn(clippy::cargo, clippy::doc_markdown, missing_docs, rustdoc::all)]
 
+use rand::{CryptoRng, Rng};
 use std::num::TryFromIntError;
 use subtle::ConditionallySelectable;
 use thiserror::Error;
-use rand::{CryptoRng, Rng};
 
 pub(crate) mod bucket;
 pub mod path_osam_plus;
@@ -128,7 +133,7 @@ pub type StashSize = u64;
 /// Numeric type used to represent the evict counter in Path OSAM+.
 pub type CounterSize = u64;
 
-/// A "trait alias" for OSAM+ blocks: the values read and written by OSAM+s.
+/// A "trait alias" for OSAM+ blocks: the values read and written by Path OSAM+s.
 pub trait OsamPlusBlock:
     Copy + Clone + std::fmt::Debug + Default + PartialEq + ConditionallySelectable
 {
@@ -159,7 +164,8 @@ pub enum OsamPlusError {
     },
 }
 
-/// Represents an oblivious RAM (OSAM+) mapping addresses of type `Address` to values of type `V: OsamPlusBlock`.
+/// Represents an oblivious SAM+ (OSAM+) mapping identifiers of type `Identifier`
+/// and position of type `TreeIndex` to values of type `V: OsamPlusBlock`.
 pub trait OsamPlus
 where
     Self: Sized,

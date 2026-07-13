@@ -5,11 +5,13 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! An example of using OSAM+ to obliviously serve an indexed database.
+//! An example of using Path OSAM+ to obliviously serve an indexed database.
 
 extern crate osam_plus;
 use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
-use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, TreeIndex};
+use osam_plus::{
+    BlockSize, BlockValue, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, TreeIndex,
+};
 use rand::{rngs::OsRng, Rng};
 
 const BLOCK_SIZE: BlockSize = 4096;
@@ -29,7 +31,7 @@ fn main() -> Result<(), OsamPlusError> {
     let mut addresses: [(Identifier, TreeIndex); DB_SIZE as usize] =
         [(Identifier::MAX, 0); DB_SIZE as usize];
 
-    // Read DATABASE into osam_plus.
+    // Read DATABASE into OSAM+.
     for (i, bytes) in DATABASE.iter().enumerate() {
         let address = osam_plus.alloc(&mut rng)?;
         addresses[i] = address;
@@ -38,7 +40,7 @@ fn main() -> Result<(), OsamPlusError> {
         let _ = osam_plus.write(identifier, position, BlockValue::new(*bytes), &mut rng)?;
     }
 
-    // Now osam_plus can be used to obliviously serve the contents of DATABASE.
+    // Now OSAM+ can be used to obliviously serve the contents of DATABASE.
     let num_operations = 100;
     for _ in 0..num_operations {
         // Assert addresses correctly map to DATABASE

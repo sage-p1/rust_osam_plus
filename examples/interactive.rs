@@ -37,12 +37,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut rl = Editor::<(), _>::new().unwrap();
 
-    println!("In this example, we initialize and interact with an oblivious RAM storing u64s.");
+    println!("In this example, we initialize and interact with an oblivious SAM+ storing u64s.");
     println!("How many u64 blocks would you like the OSAM+ to support?");
 
     let capacity = parse_u64("\nEnter a power of two:", &mut rl)?;
 
-    // Initialize a Path OSAM+ storing `capacity` u64s.
+    // Initialize an OSAM+ storing `capacity` u64s.
     let mut osam_plus = PathOsamPlus::<u64, DEFAULT_BLOCKS_PER_BUCKET>::new_with_parameters(
         capacity,
         DEFAULT_STASH_OVERFLOW_SIZE,

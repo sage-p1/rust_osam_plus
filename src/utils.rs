@@ -8,8 +8,8 @@
 //! Utilities.
 
 use rand::{CryptoRng, Rng, RngCore};
-use subtle::{Choice, ConditionallySelectable, ConstantTimeGreater, ConstantTimeLess};
 use std::num::TryFromIntError;
+use subtle::{Choice, ConditionallySelectable, ConstantTimeGreater, ConstantTimeLess};
 
 /// Numeric type used to assign positions buckets in the Path OSAM+ tree.
 pub type TreeIndex = u64;
