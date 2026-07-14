@@ -26,7 +26,7 @@
 //! Facebook's original oblivious client data structures are based on the
 //! [Oblix paper](https://people.eecs.berkeley.edu/~raluca/oblix.pdf). See the
 //! [Path ORAM retrospective paper](http://elaineshi.com/docs/pathoram-retro.pdf)
-//! for a high-level introduction to Path ORAM. The SAM+ framework is adapted from
+//! for a high-level introduction to Path ORAM.
 //!
 //! # Example
 //!
@@ -35,13 +35,14 @@
 //! ```
 //! use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlus, PathOsamPlus, TreeIndex};
 //! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
-//! # use osam_plus::OsamPlusError;
+//! use rand::{rngs::OsRng, Rng};
+//! use osam_plus::OsamPlusError;
 //!
 //! const BLOCK_SIZE: BlockSize = 64;
 //! const DB_SIZE: Identifier = 64;
 //! const DATABASE: [[u8; BLOCK_SIZE as usize]; DB_SIZE as usize] =
 //! [[0; BLOCK_SIZE as usize]; DB_SIZE as usize];
-//! let mut rng = rand::rngs::OsRng;
+//! let mut rng = OsRng;
 //! let mut addresses: [(Identifier, TreeIndex); DB_SIZE as usize] =  
 //! [(Identifier::MAX, 0); DB_SIZE as usize];
 //!
@@ -57,7 +58,8 @@
 //!     addresses[i] = address;
 //!     let identifier = address.0;
 //!     let position = address.1;
-//!     let _ = osam_plus.write(identifier, position, BlockValue::new(*bytes), &mut rng)?;
+//!     let ordered_eviction = rng.gen_bool(0.5);
+//!     let _ = osam_plus.write(identifier, position, BlockValue::new(*bytes), ordered_eviction, &mut rng)?;
 //! }
 //!
 //! // Now you can safely make secret-dependent accesses to your database.
@@ -65,7 +67,8 @@
 //!     let address = addresses[i];
 //!     let identifier = address.0;
 //!     let position = address.1;
-//!     let bytes = osam_plus.read(identifier, position)?.unwrap();
+//!     let ordered_eviction = rng.gen_bool(0.5);
+//!     let bytes = osam_plus.read(identifier, position, ordered_eviction, &mut rng)?.unwrap();
 //!     assert_eq!(bytes, BlockValue::new(DATABASE[i]));
 //! }
 //!
@@ -87,10 +90,12 @@
 //! use osam_plus::{BlockSize, BlockValue, BucketSize,
 //!             Identifier, OsamPlus, PathOsamPlus, StashSize};
 //! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
-//! # use osam_plus::OsamPlusError;
-//! # let mut rng = rand::rngs::OsRng;
-//! # const BLOCK_SIZE: BlockSize = 64;
-//! # const DB_SIZE: Identifier = 64;
+//! use rand::{rngs::OsRng, Rng};
+//!
+//! use osam_plus::OsamPlusError;
+//! let mut rng = OsRng;
+//! const BLOCK_SIZE: BlockSize = 64;
+//! const DB_SIZE: Identifier = 64;
 //!
 //! const BUCKET_SIZE: BucketSize = DEFAULT_BLOCKS_PER_BUCKET;
 //! const INITIAL_STASH_OVERFLOW_SIZE: StashSize = DEFAULT_STASH_OVERFLOW_SIZE;
@@ -188,13 +193,16 @@ where
         identifier: Identifier,
         position: TreeIndex,
         value: Self::V,
+        ordered_evict: bool,
         rng: &mut R,
     ) -> Result<(), OsamPlusError>;
 
     /// Obliviously reads the value stored at `index`.
-    fn read(
+    fn read<R: Rng + CryptoRng>(
         &mut self,
         identifier: Identifier,
         position: TreeIndex,
+        ordered_evict: bool,
+        rng: &mut R,
     ) -> Result<Option<Self::V>, OsamPlusError>;
 }

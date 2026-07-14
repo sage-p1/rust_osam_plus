@@ -37,7 +37,8 @@ fn main() -> Result<(), OsamPlusError> {
         addresses[i] = address;
         let identifier = address.0;
         let position = address.1;
-        let _ = osam_plus.write(identifier, position, BlockValue::new(*bytes), &mut rng)?;
+        let ordered_evict = rng.gen_bool(0.5);
+        let _ = osam_plus.write(identifier, position, BlockValue::new(*bytes), ordered_evict, &mut rng)?;
     }
 
     // Now OSAM+ can be used to obliviously serve the contents of DATABASE.
@@ -48,7 +49,9 @@ fn main() -> Result<(), OsamPlusError> {
         let address = addresses[random_index];
         let identifier = address.0;
         let position = address.1;
-        let value = (osam_plus.read(identifier, position)?).unwrap();
+        let ordered_evict = rng.gen_bool(0.5);
+
+        let value = (osam_plus.read(identifier, position, ordered_evict, &mut rng)?).unwrap();
         assert_eq!(value, BlockValue::new(DATABASE[random_index]));
 
         // Write DATABASE item back
@@ -56,7 +59,8 @@ fn main() -> Result<(), OsamPlusError> {
         addresses[random_index] = address;
         let identifier = address.0;
         let position = address.1;
-        let _ = osam_plus.write(identifier, position, value, &mut rng)?;
+        let ordered_evict = rng.gen_bool(0.5);
+        let _ = osam_plus.write(identifier, position, value, ordered_evict, &mut rng)?;
     }
 
     Ok(())

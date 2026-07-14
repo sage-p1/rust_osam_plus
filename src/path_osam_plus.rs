@@ -63,7 +63,7 @@ pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize> {
     /// The counter that assigns identifiers to Path OSAM+ blocks.
     // Also serves as the alloc counter.
     identifier_counter: Identifier,
-    /// The counter that deterministically picks which path evict.
+    /// The counter that deterministically picks which path to evict.
     evict_counter: CounterSize,
     /// The maximum occupancy (number of real blocks) observed in the stash at once.
     max_occupancy: StashSize,
@@ -191,6 +191,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
         evict_position = evict_position.checked_shr(64 - height).unwrap_or(0); // Move bits over to leaf indices
         evict_position += num_leaves; // Add bucket offset
         self.evict_counter += 1;
+        assert!(evict_position.is_leaf(self.height));
         Ok(evict_position)
     }
 
@@ -296,7 +297,8 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         self.identifier_counter += 1;
 
         // Randomly select leaf position
-        let position = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
+        let position: TreeIndex = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
+        assert!(position.is_leaf(self.height));
         Ok((identifier, position))
     }
 
@@ -306,6 +308,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         identifier: Identifier,
         position: TreeIndex,
         value: V,
+        ordered_evict: bool,
         rng: &mut R,
     ) -> Result<(), OsamPlusError> {
         assert_ne!(identifier, Identifier::MAX);
@@ -320,8 +323,16 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         self.stash
             .read_from_path(&mut self.physical_memory, dummy_position)?;
 
+        // Evict deterministically (reverse-lexicographic order) or randomly
+        let evict_position: TreeIndex;
+        if ordered_evict {
+            evict_position = self.evict_position()?;
+        } else {
+            evict_position = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
+            assert!(evict_position.is_leaf(self.height));
+        }
+
         // Read eviction path to stash
-        let evict_position = self.evict_position()?;
         let evict_path_index = self.stash.read_from_eviction_path(
             &mut self.physical_memory,
             dummy_position,
@@ -344,10 +355,12 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
     }
 
     /// Obliviously reads the value stored at `index`.
-    fn read(
+    fn read<R: Rng + CryptoRng>(
         &mut self,
         identifier: Identifier,
         position: TreeIndex,
+        ordered_evict: bool,
+        rng: &mut R,
     ) -> Result<Option<V>, OsamPlusError> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
@@ -356,8 +369,16 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         self.stash
             .read_from_path(&mut self.physical_memory, position)?;
 
+        // Evict deterministically (reverse-lexicographic order) or randomly
+        let evict_position: TreeIndex;
+        if ordered_evict {
+            evict_position = self.evict_position()?;
+        } else {
+            evict_position = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
+            assert!(evict_position.is_leaf(self.height));
+        }
+
         // Read eviction path to stash
-        let evict_position = self.evict_position()?;
         let evict_path_index = self.stash.read_from_eviction_path(
             &mut self.physical_memory,
             position,

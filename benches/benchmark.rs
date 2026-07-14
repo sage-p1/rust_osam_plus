@@ -141,9 +141,10 @@ fn benchmark_alloc_and_write<const B: BlockSize, const Z: BucketSize>(c: &mut Cr
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
             |b| {
-                let address = osam_plus.alloc(&mut rng).unwrap();
                 b.iter(|| {
-                    osam_plus.write(address.0, address.1, BlockValue::<B>::default(), &mut rng)
+                    let address = osam_plus.alloc(&mut rng).unwrap();
+                    let ordered_evict = rng.gen_bool(0.5);
+                    osam_plus.write(address.0, address.1, BlockValue::<B>::default(), ordered_evict, &mut rng);
                 });
             },
         );
@@ -164,7 +165,13 @@ fn benchmark_write<const B: BlockSize, const Z: BucketSize>(c: &mut Criterion) {
                 capacity: *capacity,
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
-            |b| b.iter(|| osam_plus.write(1, *capacity - 1, BlockValue::<B>::default(), &mut rng)),
+            |b| {
+                let address = osam_plus.alloc(&mut rng).unwrap();
+                b.iter(|| {
+                    let ordered_evict = rng.gen_bool(0.5);
+                    osam_plus.write(address.0, address.1, BlockValue::<B>::default(), ordered_evict, &mut rng);
+                })
+            },
         );
     }
 }
@@ -204,7 +211,10 @@ fn benchmark_local_write<const B: BlockSize, const Z: BucketSize>(c: &mut Criter
                 capacity: *capacity,
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
-            |b| b.iter(|| osam_plus.local_write(1, *capacity - 1, BlockValue::<B>::default())),
+            |b| {
+                let address = osam_plus.alloc(&mut rng).unwrap();
+                b.iter(|| osam_plus.local_write(address.0, address.1, BlockValue::<B>::default()))
+            },
         );
     }
 }
@@ -273,9 +283,10 @@ fn run_many_random_accesses<const B: BlockSize, const Z: BucketSize>(
         let identifier = address.0;
         let position = address.1;
         let random_read_versus_write: bool = read_versus_write_randomness[operation_number];
+        let ordered_evict = rng.gen_bool(0.5);
 
         if random_read_versus_write {
-            osam_plus.read(identifier, position).unwrap();
+            osam_plus.read(identifier, position, ordered_evict, &mut rng).unwrap();
         } else {
             let block_size = B;
             let start_index = block_size * operation_number;
@@ -289,6 +300,7 @@ fn run_many_random_accesses<const B: BlockSize, const Z: BucketSize>(
                         identifier,
                         position,
                         BlockValue::new(random_bytes),
+                        ordered_evict,
                         &mut rng,
                     )
                     .unwrap();
