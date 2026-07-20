@@ -34,7 +34,7 @@
 //!
 //! ```
 //! use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlus, PathOsamPlus, TreeIndex};
-//! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
+//! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE};
 //! use rand::{rngs::OsRng, Rng};
 //! use osam_plus::OsamPlusError;
 //!
@@ -50,6 +50,7 @@
 //! let mut osam_plus = PathOsamPlus::<
 //!     BlockValue<BLOCK_SIZE>,
 //!     DEFAULT_BLOCKS_PER_BUCKET,
+//!     DEFAULT_PATH_COUNT,
 //!     >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
 //!
 //! // Read a database (here, an array of byte arrays) into Path OSAM+.
@@ -89,7 +90,7 @@
 //! ```
 //! use osam_plus::{BlockSize, BlockValue, BucketSize,
 //!             Identifier, OsamPlus, PathOsamPlus, StashSize};
-//! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_STASH_OVERFLOW_SIZE};
+//! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE};
 //! use rand::{rngs::OsRng, Rng};
 //!
 //! use osam_plus::OsamPlusError;
@@ -103,6 +104,7 @@
 //! let mut osam_plus = PathOsamPlus::<
 //!     BlockValue<BLOCK_SIZE>,
 //!     DEFAULT_BLOCKS_PER_BUCKET,
+//!     DEFAULT_PATH_COUNT,
 //!     >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
 //! # Ok::<(), OsamPlusError>(())
 //! ```
@@ -133,6 +135,8 @@ pub type BlockSize = usize;
 pub type Identifier = u64;
 /// The numeric type used to specify the size of an OSAM+ bucket in blocks.
 pub type BucketSize = usize;
+/// The numeric type used to specify the number of paths an OSAM+ can evict simultaneously.
+pub type PathCount = usize;
 /// Numeric type used to represent the size of a Path OSAM+ stash in blocks.
 pub type StashSize = u64;
 /// Numeric type used to represent the evict counter in Path OSAM+.
@@ -181,7 +185,7 @@ where
     /// Returns the capacity in blocks of this OSAM+.
     fn block_capacity(&self) -> usize;
 
-    /// Allocates a valid `Identifier` and random`TreeIndex` to be used for reading and writing
+    /// Allocates a valid `Identifier` and random `TreeIndex` to be used for reading and writing
     fn alloc<R: Rng + CryptoRng>(
         &mut self,
         rng: &mut R,

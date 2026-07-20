@@ -11,15 +11,20 @@ use super::stash::ObliviousStash;
 use crate::{
     bucket::Bucket,
     utils::{CompleteBinaryTreeIndex, TreeHeight, TreeIndex},
-    BucketSize, CounterSize, Identifier, OsamPlus, OsamPlusBlock, OsamPlusError, StashSize,
+    BucketSize, CounterSize, Identifier, OsamPlus, OsamPlusBlock, OsamPlusError, PathCount,
+    StashSize,
 };
 use bit_reverse::ParallelReverse;
 use rand::{CryptoRng, Rng};
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// The parameter "Z" from the Path ORAM literature that sets the number of blocks per bucket; typical values are 3 or 4.
 /// Here we adopt the more conservative setting of 4.
 pub const DEFAULT_BLOCKS_PER_BUCKET: BucketSize = 4;
+
+/// The default number of paths that Path OSAM+ can evict simultaneously.
+pub const DEFAULT_PATH_COUNT: PathCount = 1;
 
 /// The default number of overflow blocks that the Path OSAM+ stash (and recursive stashes) can store.
 pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
@@ -33,6 +38,7 @@ pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 ///   Must be at least 2. Typical values are 3, 4, or 5.
 ///   Along with the overflow size, this value affects the probability
 ///   of stash overflow (see below) and should be set with care.
+/// - Path Count `P`: the number of paths evicted during `read_multi_paths`.
 /// - Overflow size: The number of blocks that the stash can store between OSAM+ accesses without overflowing.
 ///   Along with the bucket size, this value affects the probability of stash overflow (see below)
 ///   and should be set with care.
@@ -52,8 +58,17 @@ pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 /// and that setting SO = 40 is enough to reduce this probability to below 2^{-50} (Figure 3).
 /// The authors conservatively estimate that setting SO = 89 suffices for 2^{-80} overflow probability.
 /// The choice Z = 3 is also popular, although the probability of overflow is less well understood.
+///
+/// Under OSAM+, we introduce a function `local_write` that allows writing to the stash without evicting.
+/// This lets us save on round-trips and more easily delete stale versions that are immediately detected
+/// in the stash. Secondly, we introduce another function `read_multi_paths` that downloads and evicts P
+/// paths every round-trip, instead of just one, to greatly improve how often we merge old blocks.
+/// `read_multi_paths` downloads the P+1 paths (requested path and P evict paths). P is a constant
+/// that is set upon initialization such that 1 <= P <= (N/2)-1. When P=1, `read_multi_paths` and
+/// `read` behave the same. When P=(N/2)-1, P+1=N/2 paths are read, which means the entire server.
+/// A special exception for N=2 is that P can only be 0.
 #[derive(Debug)]
-pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize> {
+pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> {
     /// The underlying untrusted memory that the OSAM+ is obliviously accessing on behalf of its client.
     physical_memory: Vec<Bucket<V, Z>>,
     /// The Path OSAM+ stash.
@@ -61,7 +76,7 @@ pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize> {
     /// The height of the Path OSAM+ tree data structure.
     height: TreeHeight,
     /// The counter that assigns identifiers to Path OSAM+ blocks.
-    // Also serves as the alloc counter.
+    /// Also serves as the alloc counter.
     identifier_counter: Identifier,
     /// The counter that deterministically picks which path to evict.
     evict_counter: CounterSize,
@@ -77,11 +92,11 @@ pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize> {
     read_counter: CounterSize,
     /// The counter tracking the number of round-trips, which is a defined as one
     /// instance of reading a path and then writing a path. This should equal
-    /// `write_counter` + `read_counter`
+    /// `write_counter` + `read_counter`.
     round_trip_counter: CounterSize,
 }
 
-impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
+impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, Z, P> {
     /// Returns a new `PathOsamPlus` of default `V` values
     /// with a stash overflow size of `overflow_size` blocks
     /// (See [`PathOsamPlus`]) for a description of these parameters).
@@ -93,6 +108,9 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
     /// - `block_capacity` is 0, 1, or is not a power of two.
     /// - `Z` is 0 or 1.
     /// - `overflow_size` is 0.
+    /// - `P`
+    ///     - is not 0 when `block_capacity` is 2, or
+    ///     - is 0 or exceeds the number of paths possible under (`block_capacity` / 2) - 1.
     pub fn new_with_parameters(
         block_capacity: Identifier,
         overflow_size: StashSize,
@@ -120,18 +138,25 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
             });
         }
 
-        let number_of_nodes = block_capacity;
-        let height: u64 = (block_capacity.ilog2() - 1).into();
-        let path_size = u64::try_from(Z)? * (height + 1);
-        let stash = ObliviousStash::new(path_size, overflow_size)?;
+        let leaf_count = usize::try_from(block_capacity.checked_div(2).unwrap())?;
+        if !(P == 0 && block_capacity == 2 || P != 0 && P < leaf_count && block_capacity > 2) {
+            return Err(OsamPlusError::InvalidConfigurationError {
+                parameter_name: "Path Count P".to_string(),
+                parameter_value: P.to_string(),
+            });
+        }
 
-        // physical_memory holds `block_capacity` buckets, each storing up to Z blocks.
+        let number_of_nodes = block_capacity;
+        let height: StashSize = (block_capacity.ilog2() - 1).into();
+        let stash = ObliviousStash::new::<Z, P>(height, overflow_size)?;
+
+        // `physical_memory` holds `block_capacity` buckets, each storing up to Z blocks.
         // The number of leaves is `block_capacity` / 2, which the original Path ORAM paper's experiments
         // found was sufficient to keep the stash size small with high probability.
         let mut physical_memory = Vec::new();
         physical_memory.resize(usize::try_from(number_of_nodes)?, Bucket::<V, Z>::default());
 
-        // Initialize other parameters
+        // Initialize other parameters.
         let identifier_counter: Identifier = 1;
         let evict_counter: CounterSize = 0;
         let max_occupancy: StashSize = 0;
@@ -156,6 +181,65 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
         })
     }
 
+    /// Reads a single value while evicting P paths. Downloads P+1, or P if the
+    /// read path is also an evict path, paths.
+    pub fn read_multi_paths<R: Rng + CryptoRng>(
+        &mut self,
+        identifier: Identifier,
+        position: TreeIndex,
+        ordered_evict: bool,
+        rng: &mut R,
+    ) -> Result<Option<V>, OsamPlusError> {
+        assert_ne!(identifier, Identifier::MAX);
+        assert!(position.is_leaf(self.height));
+
+        // Set to hold positions for reading.
+        let mut positions = HashSet::new();
+
+        // Get P unique paths to read and evict either deterministically or randomly.
+        if ordered_evict {
+            for _ in 0..P {
+                positions.insert(self.evict_position()?);
+            }
+        } else {
+            // Add random positions until P paths are read.
+            while positions.len() < P {
+                let random_position: TreeIndex =
+                    CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
+                positions.insert(random_position);
+            }
+        }
+
+        // Add read position to set.
+        positions.insert(position);
+
+        // Read path containing target block and eviction path.
+        self.stash
+            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+
+        // Remove duplicates.
+        let _ = self.stash.merge();
+
+        // Remove block from stash (and replace with dummy).
+        let result = self.stash.read_from_stash(identifier)?;
+
+        // Remove the read path if it is not one of the evict paths.
+        if P != 0 && positions.len() == P + 1 {
+            positions.remove(&position);
+        }
+
+        // Evict blocks from the stash along a single path.
+        self.stash
+            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+
+        // Bookkeeping of OSAM+ stats.
+        self.update_stash_stats();
+        self.read_counter += 1;
+        self.round_trip_counter += 1;
+
+        Ok(result)
+    }
+
     /// Locally writes the value stored `identifier` and `position` to stash. Does not evict to server.
     pub fn local_write(
         &mut self,
@@ -166,46 +250,153 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
 
-        // Add new block to stash by replacing a dummy block
-        // Do this locally without interacting with the server
+        // Add new block to stash by replacing a dummy block.
+        // Do this locally without interacting with the server.
         self.stash.write_to_stash(identifier, position, value)?;
 
-        // Remove duplicates
+        // Remove duplicates.
         let _ = self.stash.local_merge();
 
-        // Bookkeeping of OSAM+ stats
+        // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
         self.local_write_counter += 1;
 
         Ok(())
     }
 
-    /// Calculates the next position to evict
+    /// Locally writes several data blocks to the stash. Does not evict to server.
+    pub fn local_write_batch(
+        &mut self,
+        batch: Vec<(Identifier, TreeIndex, V)>,
+    ) -> Result<(), OsamPlusError> {
+        for data in batch.iter() {
+            assert_ne!(data.0, Identifier::MAX);
+            assert!(data.1.is_leaf(self.height));
+        }
+
+        // Add new block to stash by replacing a dummy block.
+        // Do this locally without interacting with the server.
+        self.stash.write_batch_to_stash(batch)?;
+
+        // Remove duplicates.
+        let _ = self.stash.local_merge();
+
+        // Bookkeeping of OSAM+ stats.
+        self.update_stash_stats();
+        self.local_write_counter += 1;
+
+        Ok(())
+    }
+
+    /// Evicts a single path without reading any value to return to the user
+    pub fn evict<R: Rng + CryptoRng>(
+        &mut self,
+        ordered_evict: bool,
+        rng: &mut R,
+    ) -> Result<(), OsamPlusError> {
+        // Set to hold positions for reading.
+        let mut positions = HashSet::new();
+
+        // Get a paths to evict either deterministically or randomly.
+        if ordered_evict {
+            positions.insert(self.evict_position()?);
+        } else {
+            let random_position: TreeIndex =
+                CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
+            positions.insert(random_position);
+        }
+
+        // Read path containing target block and eviction path.
+        self.stash
+            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+
+        // Remove duplicates.
+        let _ = self.stash.merge();
+
+        // Evict blocks from the stash along a single path.
+        self.stash
+            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+
+        // Bookkeeping of OSAM+ stats.
+        self.update_stash_stats();
+        self.read_counter += 1;
+        self.round_trip_counter += 1;
+
+        Ok(())
+    }
+
+    /// Evicts a single path without reading any value to return to the user
+    pub fn evict_multi_paths<R: Rng + CryptoRng>(
+        &mut self,
+        ordered_evict: bool,
+        rng: &mut R,
+    ) -> Result<(), OsamPlusError> {
+        // Set to hold positions for reading.
+        let mut positions = HashSet::new();
+
+        // Get P unique paths to read and evict either deterministically or randomly.
+        if ordered_evict {
+            for _ in 0..P {
+                positions.insert(self.evict_position()?);
+            }
+        } else {
+            // Add random positions until P paths are read.
+            while positions.len() < P {
+                let random_position: TreeIndex =
+                    CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
+                positions.insert(random_position);
+            }
+        }
+
+        // Read path containing target block and eviction path.
+        self.stash
+            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+
+        // Remove duplicates.
+        let _ = self.stash.merge();
+
+        // Evict blocks from the stash along a single path.
+        self.stash
+            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+
+        // Bookkeeping of OSAM+ stats.
+        self.update_stash_stats();
+        self.read_counter += 1;
+        self.round_trip_counter += 1;
+
+        Ok(())
+    }
+
+    /// Calculates the next position to evict.
     fn evict_position(&mut self) -> Result<TreeIndex, OsamPlusError> {
-        // Deterministically evict buckets in reverse-lexicographic ordering
+        // Deterministically evict buckets in reverse-lexicographic ordering.
         let mut evict_position: TreeIndex = self.evict_counter;
         let height: u32 = self.height.try_into()?;
-        let num_leaves = 2u64.pow(height);
-        evict_position %= num_leaves; // Map to bucket indices
-        evict_position = evict_position.swap_bits(); // Bit reversal
-        evict_position = evict_position.checked_shr(64 - height).unwrap_or(0); // Move bits over to leaf indices
-        evict_position += num_leaves; // Add bucket offset
+        let number_of_leaves = 2u64.pow(height);
+
+        // Map to bucket indices, perform bit reversal, move bits over to
+        // leaf indices, and add bucket offset.
+        evict_position %= number_of_leaves;
+        evict_position = evict_position.swap_bits();
+        evict_position = evict_position.checked_shr(64 - height).unwrap_or(0);
+        evict_position += number_of_leaves;
+
         self.evict_counter += 1;
         assert!(evict_position.is_leaf(self.height));
         Ok(evict_position)
     }
 
-    /// Outputs the number of real blocks in the stash
+    /// Outputs the number of real blocks in the stash.
     pub fn stash_occupancy(&self) -> StashSize {
         self.stash.occupancy()
     }
 
-    /// Outputs the total size of the stash
-    pub fn stash_size(&self) -> usize {
-        self.stash.len()
+    /// Outputs the total size of the stash.
+    pub fn stash_size(&self) -> StashSize {
+        StashSize::try_from(self.stash.len()).unwrap()
     }
 
-    /// Updates maximum occupancy and bookmarks current occupancy
+    /// Updates maximum occupancy and bookmarks current occupancy.
     fn update_stash_stats(&mut self) {
         let current_occupancy = self.stash_occupancy();
         if current_occupancy > self.max_occupancy {
@@ -215,71 +406,96 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PathOsamPlus<V, Z> {
         *count += 1;
     }
 
-    /// Outputs the maximum stash occupancy
+    /// Outputs the maximum stash occupancy.
     pub fn max_occupancy(&self) -> StashSize {
         self.max_occupancy
     }
 
-    /// Calculates and outputs variance of stash occupancy
+    /// Calculates and outputs variance of stash occupancy.
     pub fn variance(&self) -> f64 {
-        // Calculate average occupancy
+        // Calculate average occupancy.
         let mut sum = 0;
-        let mut num_occurrences = 0;
+        let mut occurrences = 0;
         for (occupancy, count) in self.all_occupancies.iter() {
             sum += occupancy * count;
-            num_occurrences += count;
+            occurrences += count;
         }
-        let average = (sum as f64) / (num_occurrences as f64);
+        let average = (sum as f64) / (occurrences as f64);
 
-        // Calculate probability and variance per occupancy
+        // Calculate probability and variance per occupancy.
         let mut variance: f64 = 0.0;
         for (occupancy, count) in self.all_occupancies.iter() {
             let squared_term = ((*occupancy as f64) - average).powi(2);
-            let probability = (*count as f64) / (num_occurrences as f64);
+            let probability = (*count as f64) / (occurrences as f64);
             variance += squared_term * probability;
         }
         variance
     }
 
-    /// Calculates and outputs standard deviation of stash occupancy
+    /// Calculates and outputs standard deviation of stash occupancy.
     pub fn standard_deviation(&self) -> f64 {
         self.variance().powf(0.5)
     }
 
-    /// Outputs variance and standard deviation of stash occupancy together
+    /// Outputs variance and standard deviation of stash occupancy together.
     pub fn variance_and_standard_deviation(&self) -> (f64, f64) {
         let variance = self.variance();
         let standard_deviation = variance.powf(0.5);
         (variance, standard_deviation)
     }
 
-    /// Outputs the number of allocs
+    /// Outputs the number of allocs.
     pub fn alloc_counter(&self) -> Identifier {
         self.identifier_counter - 1
     }
 
-    /// Outputs the number of writes with eviction
-    pub fn write_counter(&self) -> StashSize {
+    /// Outputs the number of writes with eviction.
+    pub fn write_counter(&self) -> CounterSize {
         self.write_counter
     }
 
-    /// Outputs the number of local writes without eviction
-    pub fn local_write_counter(&self) -> StashSize {
+    /// Outputs the number of local writes without eviction.
+    pub fn local_write_counter(&self) -> CounterSize {
         self.local_write_counter
     }
 
-    /// Outputs the number of reads
-    pub fn read_counter(&self) -> StashSize {
+    /// Outputs the number of reads.
+    pub fn read_counter(&self) -> CounterSize {
         self.read_counter
     }
 
-    /// Outputs the number of round trips
-    pub fn round_trip_counter(&self) -> StashSize {
+    /// Outputs the number of round trips.
+    pub fn round_trip_counter(&self) -> CounterSize {
         self.round_trip_counter
+    }
+
+    /// Print blocks in physical memory for debug purposes.
+    pub fn print_physical_memory(&self) {
+        println!("Physical Memory: ");
+        for i in 1..(self.physical_memory.len()) {
+            print!("BUCKET {}: ", i);
+            let bucket = self.physical_memory[i];
+            for block in bucket.blocks.iter() {
+                if block.ct_is_dummy().into() {
+                    print!("(dummy) | ");
+                } else {
+                    print!(
+                        "({}, {}, {:?}) | ",
+                        block.identifier, block.position, block.value
+                    );
+                }
+            }
+            println!();
+        }
+    }
+
+    /// Print blocks in stash for debug purposes.
+    pub fn print_stash(&self) {
+        self.stash.print_stash();
     }
 }
 
-impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
+impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for PathOsamPlus<V, Z, P> {
     type V = V;
 
     /// Returns the capacity in blocks of this OSAM+.
@@ -287,22 +503,22 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         self.physical_memory.len()
     }
 
-    /// Allocates a valid `Identifier` and `TreeIndex` to be used for reading and writing
+    /// Allocates a valid `Identifier` and `TreeIndex` to be used for reading and writing.
     fn alloc<R: Rng + CryptoRng>(
         &mut self,
         rng: &mut R,
     ) -> Result<(Identifier, TreeIndex), OsamPlusError> {
-        // Assign unique identifier from counter
+        // Assign unique identifier from counter.
         let identifier = self.identifier_counter;
         self.identifier_counter += 1;
 
-        // Randomly select leaf position
+        // Randomly select leaf position.
         let position: TreeIndex = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
         assert!(position.is_leaf(self.height));
         Ok((identifier, position))
     }
 
-    /// Obliviously writes the value stored `identifier` and `position`. Evicts blocks to server.
+    /// Obliviously writes the value stored `identifier` and `position`. Evicts 1 path to the server.
     fn write<R: Rng + CryptoRng>(
         &mut self,
         identifier: Identifier,
@@ -314,16 +530,18 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
 
-        // Add new block to stash by replacing a dummy block
+        // Add new block to stash by replacing a dummy block.
         self.stash.write_to_stash(identifier, position, value)?;
 
-        // Read a dummy path to make reads and writes indistinguishable
+        // Set to hold positions for reading.
+        let mut positions = HashSet::new();
+
+        // Read a dummy path to make reads and writes indistinguishable.
         let dummy_position: TreeIndex = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
         assert!(dummy_position.is_leaf(self.height));
-        self.stash
-            .read_from_path(&mut self.physical_memory, dummy_position)?;
+        positions.insert(dummy_position);
 
-        // Evict deterministically (reverse-lexicographic order) or randomly
+        // Get evict path deterministically (reverse-lexicographic order) or randomly.
         let evict_position: TreeIndex;
         if ordered_evict {
             evict_position = self.evict_position()?;
@@ -331,22 +549,25 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
             evict_position = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
             assert!(evict_position.is_leaf(self.height));
         }
+        positions.insert(evict_position);
 
-        // Read eviction path to stash
-        let evict_path_index = self.stash.read_from_eviction_path(
-            &mut self.physical_memory,
-            dummy_position,
-            evict_position,
-        )?;
-
-        // Remove duplicates
-        let _ = self.stash.merge(evict_path_index);
-
-        // Evict blocks from the stash along a deterministic path
+        // Download dummy path and evict path.
         self.stash
-            .write_to_path(&mut self.physical_memory, evict_position)?;
+            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
 
-        // Bookkeeping of OSAM+ stats
+        // Remove duplicates.
+        let _ = self.stash.merge();
+
+        // Remove the dummy path if it is not the evict path.
+        if positions.len() == 2 {
+            positions.remove(&dummy_position);
+        }
+
+        // Evict blocks from the stash along a single path.
+        self.stash
+            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+
+        // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
         self.write_counter += 1;
         self.round_trip_counter += 1;
@@ -354,7 +575,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         Ok(())
     }
 
-    /// Obliviously reads the value stored at `index`.
+    /// Obliviously reads the value stored at `index`. Evict 1 path to the server.
     fn read<R: Rng + CryptoRng>(
         &mut self,
         identifier: Identifier,
@@ -365,11 +586,11 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
         assert_ne!(identifier, Identifier::MAX);
         assert!(position.is_leaf(self.height));
 
-        // Read path containing target block
-        self.stash
-            .read_from_path(&mut self.physical_memory, position)?;
+        // Set to hold positions for reading.
+        let mut positions = HashSet::new();
+        positions.insert(position);
 
-        // Evict deterministically (reverse-lexicographic order) or randomly
+        // Get evict path deterministically (reverse-lexicographic order) or randomly.
         let evict_position: TreeIndex;
         if ordered_evict {
             evict_position = self.evict_position()?;
@@ -377,25 +598,28 @@ impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlus for PathOsamPlus<V, Z> {
             evict_position = CompleteBinaryTreeIndex::random_leaf(self.height, rng)?;
             assert!(evict_position.is_leaf(self.height));
         }
+        positions.insert(evict_position);
 
-        // Read eviction path to stash
-        let evict_path_index = self.stash.read_from_eviction_path(
-            &mut self.physical_memory,
-            position,
-            evict_position,
-        )?;
+        // Read path containing target block and eviction path.
+        self.stash
+            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
 
-        // Remove duplicates
-        let _ = self.stash.merge(evict_path_index);
+        // Remove duplicates.
+        let _ = self.stash.merge();
 
-        // Remove block from stash (and replace with dummy)
+        // Remove block from stash (and replace with dummy).
         let result = self.stash.read_from_stash(identifier)?;
 
-        // Evict blocks from the stash along a deterministic path
-        self.stash
-            .write_to_path(&mut self.physical_memory, evict_position)?;
+        // Remove the read path if it is not the evict path.
+        if positions.len() == 2 {
+            positions.remove(&position);
+        }
 
-        // Bookkeeping of OSAM+ stats
+        // Evict blocks from the stash along a single path.
+        self.stash
+            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+
+        // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
         self.read_counter += 1;
         self.round_trip_counter += 1;
