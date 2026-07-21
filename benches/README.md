@@ -9,325 +9,452 @@ Use `cargo bench` to run benchmarks.
 Running benches/benchmark.rs (target/release/deps/benchmark-a6aabfbecaf5b98f)
 Gnuplot not found, using plotters backend
 Benchmarking PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 4096): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 270.6ms.
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 274.0ms.
+Benchmarking PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 4096): Col
+Benchmarking PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 4096): Ana
 PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 4096)
-                        time:   [26.299 ms 26.544 ms 26.839 ms]
-                        change: [-9.9794% -7.7665% -5.5071%] (p = 0.00 < 0.05)
-                        Performance has improved.
+                        time:   [26.716 ms 26.858 ms 27.013 ms]
+                        change: [-27.874% -14.082% -3.0917%] (p = 0.10 > 0.05)
+                        No change in performance detected.
 Benchmarking PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 4096): Warming up for 100.00 ms
 Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 1.8s.
+Benchmarking PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 4096): Col
+Benchmarking PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 4096): Ana
 PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 4096)
-                        time:   [114.15 ms 122.82 ms 133.25 ms]
-                        change: [-5.7442% +3.7349% +14.262%] (p = 0.52 > 0.05)
+                        time:   [112.34 ms 122.43 ms 132.93 ms]
+                        change: [-7.7700% +3.0736% +14.475%] (p = 0.61 > 0.05)
                         No change in performance detected.
-Found 2 outliers among 10 measurements (20.00%)
-  2 (20.00%) high mild
 Benchmarking PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 4096): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 24.0s.
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 24.4s.
+Benchmarking PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 4096): C
+Benchmarking PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 4096): A
 PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 4096)
-                        time:   [2.4398 s 2.5262 s 2.6446 s]
-                        change: [+2.1176% +5.7467% +11.286%] (p = 0.01 < 0.05)
-                        Performance has regressed.
-Found 2 outliers among 10 measurements (20.00%)
-  1 (10.00%) high mild
-  1 (10.00%) high severe
+                        time:   [2.4154 s 2.4481 s 2.4869 s]
+                        change: [-7.5410% -3.0914% +0.7743%] (p = 0.22 > 0.05)
+                        No change in performance detected.
 
+Benchmarking PathOsamPlus::alloc/(Capacity: 16384 Blocksize: 4096): Warming up f
+Benchmarking PathOsamPlus::alloc/(Capacity: 16384 Blocksize: 4096): Collecting 1
 PathOsamPlus::alloc/(Capacity: 16384 Blocksize: 4096)
-                        time:   [34.075 ns 34.208 ns 34.409 ns]
-                        change: [+3.0410% +4.0689% +5.6138%] (p = 0.00 < 0.05)
-                        Performance has regressed.
+                        time:   [34.342 ns 34.580 ns 34.825 ns]
+                        change: [-1.0333% +0.3938% +1.5014%] (p = 0.61 > 0.05)
+                        No change in performance detected.
 Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) high severe
+  1 (10.00%) high mild
+Benchmarking PathOsamPlus::alloc/(Capacity: 65536 Blocksize: 4096): Warming up f
+Benchmarking PathOsamPlus::alloc/(Capacity: 65536 Blocksize: 4096): Collecting 1
 PathOsamPlus::alloc/(Capacity: 65536 Blocksize: 4096)
-                        time:   [31.963 ns 32.110 ns 32.241 ns]
-                        change: [+4.6534% +5.1840% +5.9172%] (p = 0.00 < 0.05)
+                        time:   [34.003 ns 34.309 ns 34.732 ns]
+                        change: [+5.5605% +6.5462% +7.6140%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 4096): Warming up
+Benchmarking PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 4096): Collecting
+PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 4096)
+                        time:   [36.231 ns 37.092 ns 37.799 ns]
+                        change: [+3.3774% +5.3122% +7.4219%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 111.1ms or enable flat sampling.
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096): Collecting 10
+PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096)
+                        time:   [1.3442 ms 1.9120 ms 2.4956 ms]
+                        change: [+33.337% +67.320% +105.67%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 4096): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 125.7ms or enable flat sampling.
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 4096): Collecting 10
+PathOsamPlus::read/(Capacity: 65536 Blocksize: 4096)
+                        time:   [1.5826 ms 2.1241 ms 2.3821 ms]
+                        change: [+11.734% +26.576% +42.864%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096): Warming up 
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096): Collecting 
+PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096)
+                        time:   [4.2421 ms 4.8985 ms 5.6736 ms]
+                        change: [+103.74% +137.12% +173.77%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
-PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 4096)
-                        time:   [34.500 ns 34.655 ns 34.815 ns]
-                        change: [+3.5797% +4.9078% +6.3929%] (p = 0.00 < 0.05)
+
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096) #2: Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 163.5ms or enable flat sampling.
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096) #2: Collecting
+PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096) #2
+                        time:   [1.9942 ms 2.0661 ms 2.1830 ms]
+                        change: [+51.958% +72.152% +103.68%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 3 outliers among 10 measurements (30.00%)
   1 (10.00%) low mild
-  2 (20.00%) high severe
-
-PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096)
-                        time:   [1.1827 ms 1.1867 ms 1.1933 ms]
-                        change: [+50.584% +51.703% +53.155%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
-PathOsamPlus::read/(Capacity: 65536 Blocksize: 4096)
-                        time:   [1.4309 ms 1.4496 ms 1.4718 ms]
-                        change: [+56.149% +59.086% +63.001%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 2 outliers among 10 measurements (20.00%)
-  2 (20.00%) high severe
-Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 123.3ms or enable flat sampling.
-PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096)
-                        time:   [2.0008 ms 2.0326 ms 2.0953 ms]
-                        change: [+51.429% +58.325% +66.834%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high severe
-
-PathOsamPlus::read/(Capacity: 16384 Blocksize: 4096) #2
-                        time:   [1.2134 ms 1.2276 ms 1.2423 ms]
-                        change: [+56.108% +57.952% +59.910%] (p = 0.00 < 0.05)
-                        Performance has regressed.
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 4096) #2: Warming up
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 4096) #2: Collecting
 PathOsamPlus::read/(Capacity: 65536 Blocksize: 4096) #2
-                        time:   [1.4080 ms 1.4140 ms 1.4262 ms]
-                        change: [+58.528% +60.178% +62.543%] (p = 0.00 < 0.05)
+                        time:   [2.2482 ms 2.5551 ms 2.8671 ms]
+                        change: [+57.809% +79.165% +100.94%] (p = 0.00 < 0.05)
                         Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) high mild
-Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096) #2: Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 111.3ms or enable flat sampling.
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096) #2: Warming 
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096) #2: Collecti
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096) #2: Analyzin
 PathOsamPlus::read/(Capacity: 1048576 Blocksize: 4096) #2
-                        time:   [1.9192 ms 1.9641 ms 2.0448 ms]
-                        change: [+43.698% +52.378% +59.716%] (p = 0.00 < 0.05)
+                        time:   [3.1079 ms 3.5467 ms 3.9850 ms]
+                        change: [+57.331% +80.064% +104.20%] (p = 0.00 < 0.05)
                         Performance has regressed.
 
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 4096): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 118.3ms or enable flat sampling.
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 4096): Collecting 1
 PathOsamPlus::write/(Capacity: 16384 Blocksize: 4096)
-                        time:   [1.1569 ms 1.1661 ms 1.1759 ms]
-                        change: [+54.233% +55.309% +56.419%] (p = 0.00 < 0.05)
+                        time:   [2.2886 ms 2.5085 ms 2.7846 ms]
+                        change: [+90.469% +122.02% +150.37%] (p = 0.00 < 0.05)
                         Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 4096): Warming up f
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 4096): Collecting 1
 PathOsamPlus::write/(Capacity: 65536 Blocksize: 4096)
-                        time:   [1.5068 ms 1.5357 ms 1.5882 ms]
-                        change: [+49.110% +58.476% +68.329%] (p = 0.00 < 0.05)
+                        time:   [2.8911 ms 3.2700 ms 3.6249 ms]
+                        change: [+83.292% +111.89% +135.24%] (p = 0.00 < 0.05)
                         Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) high mild
-Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 114.5ms or enable flat sampling.
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096): Warming up
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096): Collecting
 PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096)
-                        time:   [1.9482 ms 2.0127 ms 2.0806 ms]
-                        change: [+47.725% +56.580% +65.380%] (p = 0.00 < 0.05)
+                        time:   [4.0021 ms 4.4447 ms 4.9502 ms]
+                        change: [+96.172% +120.08% +145.86%] (p = 0.00 < 0.05)
                         Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) high mild
 
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 4096) #2: Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 126.0ms or enable flat sampling.
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 4096) #2: Collectin
 PathOsamPlus::write/(Capacity: 16384 Blocksize: 4096) #2
-                        time:   [1.1263 ms 1.1358 ms 1.1548 ms]
-                        change: [+49.165% +50.955% +53.081%] (p = 0.00 < 0.05)
+                        time:   [2.1381 ms 2.3660 ms 2.6568 ms]
+                        change: [+67.101% +102.37% +140.12%] (p = 0.00 < 0.05)
                         Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) high mild
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 4096) #2: Warming u
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 4096) #2: Collectin
 PathOsamPlus::write/(Capacity: 65536 Blocksize: 4096) #2
-                        time:   [1.3771 ms 1.4106 ms 1.4423 ms]
-                        change: [+44.756% +47.371% +50.247%] (p = 0.00 < 0.05)
+                        time:   [2.7315 ms 2.9861 ms 3.2736 ms]
+                        change: [+95.511% +113.66% +132.71%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096) #2: Warming
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096) #2: Collect
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096) #2: Analyzi
+PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096) #2
+                        time:   [4.0392 ms 6.2257 ms 9.0485 ms]
+                        change: [+112.73% +220.19% +337.78%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
-Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096) #2: Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 112.8ms or enable flat sampling.
-PathOsamPlus::write/(Capacity: 1048576 Blocksize: 4096) #2
-                        time:   [1.9085 ms 1.9436 ms 1.9761 ms]
-                        change: [+35.312% +43.763% +51.868%] (p = 0.00 < 0.05)
-                        Performance has regressed.
 
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096): Warmin
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096): Collec
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096): Analyz
 PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096)
-                        time:   [1.2006 ms 1.2343 ms 1.2662 ms]
-                        change: [+3502.3% +3631.8% +3775.1%] (p = 0.00 < 0.05)
-                        Performance has regressed.
+                        time:   [1.2169 ms 1.2682 ms 1.3120 ms]
+                        change: [-2.4146% +1.6994% +5.7982%] (p = 0.44 > 0.05)
+                        No change in performance detected.
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096): Warmin
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096): Collec
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096): Analyz
 PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096)
-                        time:   [1.1983 ms 1.2998 ms 1.3523 ms]
-                        change: [+3384.8% +3616.5% +3846.5%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096)
-                        time:   [1.1344 ms 1.1808 ms 1.2068 ms]
-                        change: [+3423.7% +3694.9% +4021.6%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-
-PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096) #2
-                        time:   [45.818 µs 47.719 µs 50.291 µs]
-                        change: [+199.31% +210.64% +222.24%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096) #2
-                        time:   [30.356 µs 33.386 µs 36.011 µs]
-                        change: [+111.96% +124.57% +133.60%] (p = 0.00 < 0.05)
+                        time:   [1.3562 ms 1.6303 ms 1.9783 ms]
+                        change: [+3.3810% +19.552% +39.461%] (p = 0.05 < 0.05)
                         Performance has regressed.
 Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) low mild
-PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096) #2
-                        time:   [36.384 µs 37.156 µs 37.714 µs]
-                        change: [+131.90% +138.64% +144.10%] (p = 0.00 < 0.05)
+  1 (10.00%) high mild
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096): Warm
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096): Coll
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096): Anal
+PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096)
+                        time:   [1.3799 ms 1.5056 ms 1.5812 ms]
+                        change: [+15.130% +27.508% +40.444%] (p = 0.00 < 0.05)
                         Performance has regressed.
-Found 2 outliers among 10 measurements (20.00%)
-  2 (20.00%) low mild
 
-Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 4096, Ops: 64): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 570.2ms.
-PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 4096, Ops: 64)
-                        time:   [55.587 ms 55.852 ms 56.231 ms]
-                        change: [+39.607% +40.399% +41.356%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 2 outliers among 10 measurements (20.00%)
-  1 (10.00%) low mild
-  1 (10.00%) high severe
-Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 4096, Ops: 64): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 726.8ms.
-PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 4096, Ops: 64)
-                        time:   [71.105 ms 77.043 ms 88.007 ms]
-                        change: [+50.341% +63.503% +87.678%] (p = 0.00 < 0.05)
-                        Performance has regressed.
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096) #2: War
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096) #2: Col
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096) #2: Ana
+PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 4096) #2
+                        time:   [16.294 µs 16.751 µs 17.531 µs]
+                        change: [-66.188% -64.434% -62.507%] (p = 0.00 < 0.05)
+                        Performance has improved.
 Found 2 outliers among 10 measurements (20.00%)
   2 (20.00%) high severe
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096) #2: War
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096) #2: Col
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096) #2: Ana
+PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 4096) #2
+                        time:   [16.393 µs 16.464 µs 16.641 µs]
+                        change: [-53.787% -51.716% -49.041%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high mild
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096) #2: W
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096) #2: C
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096) #2: A
+PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 4096) #2
+                        time:   [16.405 µs 16.486 µs 16.664 µs]
+                        change: [-56.259% -55.136% -53.839%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 4096, O
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 4096, Ops: 64): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 1.2s.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 4096, O
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 4096, O
+PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 4096, Ops: 64)
+                        time:   [67.881 ms 80.362 ms 94.186 ms]
+                        change: [+23.375% +43.884% +67.496%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 4096, O
+Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 4096, Ops: 64): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 794.6ms.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 4096, O
+Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 4096, O
+PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 4096, Ops: 64)
+                        time:   [105.10 ms 113.04 ms 122.90 ms]
+                        change: [+24.919% +46.726% +67.691%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 4096,
 Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 4096, Ops: 64): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 2.2s.
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 5.7s.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 4096,
+Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 4096,
 PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 4096, Ops: 64)
-                        time:   [96.466 ms 99.606 ms 103.26 ms]
-                        change: [+23.130% +33.970% +44.009%] (p = 0.00 < 0.05)
+                        time:   [203.01 ms 2.0139 s 5.4307 s]
+                        change: [+105.85% +1921.9% +5446.6%] (p = 0.22 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 64): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 103.3ms or enable flat sampling.
+Benchmarking PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 64): Colle
+Benchmarking PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 64): Analy
+PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 64)
+                        time:   [533.37 µs 1.2216 ms 1.8179 ms]
+                        change: [+76.978% +190.00% +321.84%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 64): Warmi
+Benchmarking PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 64): Colle
+Benchmarking PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 64): Analy
+PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 64)
+                        time:   [4.8937 ms 6.0646 ms 7.6478 ms]
+                        change: [+116.29% +170.57% +239.66%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 64): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 682.3ms.
+Benchmarking PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 64): Col
+Benchmarking PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 64): Ana
+PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 64)
+                        time:   [69.687 ms 75.224 ms 81.739 ms]
+                        change: [+113.43% +131.98% +150.50%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
 
-PathOsamPlus::initialization/(Capacity: 16384 Blocksize: 64)
-                        time:   [309.53 µs 317.87 µs 327.86 µs]
-                        change: [-5.3132% +0.2553% +6.6613%] (p = 0.95 > 0.05)
-                        No change in performance detected.
-Found 2 outliers among 10 measurements (20.00%)
-  1 (10.00%) low mild
-  1 (10.00%) high severe
-Benchmarking PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 64): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 132.8ms or enable flat sampling.
-PathOsamPlus::initialization/(Capacity: 65536 Blocksize: 64)
-                        time:   [2.1495 ms 2.2160 ms 2.2921 ms]
-                        change: [-4.9214% -2.2990% +0.4510%] (p = 0.13 > 0.05)
-                        No change in performance detected.
-Benchmarking PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 64): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 330.0ms.
-PathOsamPlus::initialization/(Capacity: 1048576 Blocksize: 64)
-                        time:   [31.971 ms 32.427 ms 32.885 ms]
-                        change: [-0.4297% +1.0741% +2.7666%] (p = 0.23 > 0.05)
-                        No change in performance detected.
-
+Benchmarking PathOsamPlus::alloc/(Capacity: 16384 Blocksize: 64): Warming up for
+Benchmarking PathOsamPlus::alloc/(Capacity: 16384 Blocksize: 64): Collecting 10 
 PathOsamPlus::alloc/(Capacity: 16384 Blocksize: 64)
-                        time:   [35.185 ns 35.430 ns 35.870 ns]
-                        change: [+4.5664% +5.7743% +7.0120%] (p = 0.00 < 0.05)
+                        time:   [36.427 ns 36.805 ns 37.427 ns]
+                        change: [+2.5995% +5.5479% +9.3837%] (p = 0.00 < 0.05)
                         Performance has regressed.
-PathOsamPlus::alloc/(Capacity: 65536 Blocksize: 64)
-                        time:   [32.060 ns 32.128 ns 32.239 ns]
-                        change: [-0.7129% +0.8797% +2.4209%] (p = 0.30 > 0.05)
-                        No change in performance detected.
-PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 64)
-                        time:   [35.214 ns 35.460 ns 36.004 ns]
-                        change: [+4.6301% +5.8693% +7.1470%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-
-PathOsamPlus::read/(Capacity: 16384 Blocksize: 64)
-                        time:   [195.75 µs 196.30 µs 197.29 µs]
-                        change: [+289.53% +292.03% +294.63%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
   1 (10.00%) high severe
-PathOsamPlus::read/(Capacity: 65536 Blocksize: 64)
-                        time:   [271.61 µs 273.57 µs 275.54 µs]
-                        change: [+352.66% +358.72% +364.81%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64)
-                        time:   [438.38 µs 439.91 µs 442.91 µs]
-                        change: [+381.74% +387.32% +391.97%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-
-PathOsamPlus::read/(Capacity: 16384 Blocksize: 64) #2
-                        time:   [196.61 µs 197.64 µs 198.95 µs]
-                        change: [+292.41% +294.32% +296.15%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-PathOsamPlus::read/(Capacity: 65536 Blocksize: 64) #2
-                        time:   [262.85 µs 263.59 µs 265.16 µs]
-                        change: [+344.85% +348.48% +351.49%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) low mild
-PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64) #2
-                        time:   [413.96 µs 417.91 µs 420.47 µs]
-                        change: [+355.83% +362.45% +368.65%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-Found 1 outliers among 10 measurements (10.00%)
-  1 (10.00%) low severe
-
-PathOsamPlus::write/(Capacity: 16384 Blocksize: 64)
-                        time:   [292.05 µs 332.60 µs 352.08 µs]
-                        change: [+438.74% +489.25% +547.05%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-PathOsamPlus::write/(Capacity: 65536 Blocksize: 64)
-                        time:   [370.98 µs 380.01 µs 384.14 µs]
-                        change: [+451.45% +468.05% +484.09%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64)
-                        time:   [493.22 µs 511.55 µs 521.78 µs]
-                        change: [+413.33% +433.85% +453.76%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-
-PathOsamPlus::write/(Capacity: 16384 Blocksize: 64) #2
-                        time:   [199.72 µs 200.42 µs 201.01 µs]
-                        change: [+297.71% +299.41% +300.87%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-PathOsamPlus::write/(Capacity: 65536 Blocksize: 64) #2
-                        time:   [263.64 µs 264.30 µs 265.63 µs]
-                        change: [+310.83% +314.31% +318.67%] (p = 0.00 < 0.05)
+Benchmarking PathOsamPlus::alloc/(Capacity: 65536 Blocksize: 64): Warming up for
+Benchmarking PathOsamPlus::alloc/(Capacity: 65536 Blocksize: 64): Collecting 10 
+PathOsamPlus::alloc/(Capacity: 65536 Blocksize: 64)
+                        time:   [34.862 ns 36.969 ns 41.878 ns]
+                        change: [+14.150% +26.822% +40.243%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 2 outliers among 10 measurements (20.00%)
   2 (20.00%) high mild
-PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64) #2
-                        time:   [418.66 µs 419.22 µs 420.04 µs]
-                        change: [+363.83% +365.04% +366.32%] (p = 0.00 < 0.05)
+Benchmarking PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 64): Warming up f
+Benchmarking PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 64): Collecting 1
+PathOsamPlus::alloc/(Capacity: 1048576 Blocksize: 64)
+                        time:   [63.940 ns 76.990 ns 94.472 ns]
+                        change: [+78.188% +126.39% +183.25%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 64): Warming up for 
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 64): Collecting 10 s
+PathOsamPlus::read/(Capacity: 16384 Blocksize: 64)
+                        time:   [288.32 µs 391.87 µs 520.73 µs]
+                        change: [+55.830% +93.755% +131.00%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 64): Warming up for 
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 64): Collecting 10 s
+PathOsamPlus::read/(Capacity: 65536 Blocksize: 64)
+                        time:   [289.81 µs 292.70 µs 296.34 µs]
+                        change: [+6.5246% +8.9507% +11.918%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64): Warming up fo
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64): Collecting 10
+PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64)
+                        time:   [533.71 µs 654.28 µs 714.16 µs]
+                        change: [+13.066% +26.968% +43.302%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 64) #2: Warming up f
+Benchmarking PathOsamPlus::read/(Capacity: 16384 Blocksize: 64) #2: Collecting 1
+PathOsamPlus::read/(Capacity: 16384 Blocksize: 64) #2
+                        time:   [214.79 µs 219.87 µs 224.54 µs]
+                        change: [+8.5754% +10.102% +11.967%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 64) #2: Warming up f
+Benchmarking PathOsamPlus::read/(Capacity: 65536 Blocksize: 64) #2: Collecting 1
+PathOsamPlus::read/(Capacity: 65536 Blocksize: 64) #2
+                        time:   [284.82 µs 368.79 µs 422.91 µs]
+                        change: [+6.1083% +20.853% +38.680%] (p = 0.01 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64) #2: Warming up
+Benchmarking PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64) #2: Collecting
+PathOsamPlus::read/(Capacity: 1048576 Blocksize: 64) #2
+                        time:   [471.89 µs 478.80 µs 484.87 µs]
+                        change: [+10.583% +13.373% +15.999%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
 
-PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64)
-                        time:   [194.22 µs 204.56 µs 214.23 µs]
-                        change: [+10340% +10845% +11422%] (p = 0.00 < 0.05)
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 64): Warming up for
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 64): Collecting 10 
+PathOsamPlus::write/(Capacity: 16384 Blocksize: 64)
+                        time:   [299.16 µs 341.24 µs 364.61 µs]
+                        change: [-3.6883% +7.9148% +20.882%] (p = 0.23 > 0.05)
+                        No change in performance detected.
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 64): Warming up for
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 64): Collecting 10 
+PathOsamPlus::write/(Capacity: 65536 Blocksize: 64)
+                        time:   [541.03 µs 700.17 µs 795.24 µs]
+                        change: [+31.360% +59.110% +90.040%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64): Warming up f
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64): Collecting 1
+PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64)
+                        time:   [736.08 µs 766.73 µs 817.29 µs]
+                        change: [+32.130% +50.712% +69.027%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 64) #2: Warming up 
+Benchmarking PathOsamPlus::write/(Capacity: 16384 Blocksize: 64) #2: Collecting 
+PathOsamPlus::write/(Capacity: 16384 Blocksize: 64) #2
+                        time:   [213.96 µs 215.69 µs 218.67 µs]
+                        change: [+6.8669% +8.2526% +10.012%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 2 outliers among 10 measurements (20.00%)
-  1 (10.00%) low mild
+  2 (20.00%) high mild
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 64) #2: Warming up 
+Benchmarking PathOsamPlus::write/(Capacity: 65536 Blocksize: 64) #2: Collecting 
+PathOsamPlus::write/(Capacity: 65536 Blocksize: 64) #2
+                        time:   [305.01 µs 315.16 µs 321.62 µs]
+                        change: [+10.728% +14.715% +18.115%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64) #2: Warming u
+Benchmarking PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64) #2: Collectin
+PathOsamPlus::write/(Capacity: 1048576 Blocksize: 64) #2
+                        time:   [771.36 µs 923.49 µs 1.1508 ms]
+                        change: [+105.92% +152.94% +207.21%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
+
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64): Warming 
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64): Collecti
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64): Analyzin
+PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64)
+                        time:   [257.42 µs 342.58 µs 387.68 µs]
+                        change: [+6.3509% +37.863% +66.954%] (p = 0.03 < 0.05)
+                        Performance has regressed.
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64): Warming 
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64): Collecti
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64): Analyzin
 PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64)
-                        time:   [187.66 µs 201.44 µs 213.01 µs]
-                        change: [+10200% +10689% +11306%] (p = 0.00 < 0.05)
+                        time:   [226.65 µs 308.99 µs 361.92 µs]
+                        change: [+8.1816% +32.145% +61.049%] (p = 0.02 < 0.05)
                         Performance has regressed.
 Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64): Warmin
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64): Collec
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64): Analyz
 PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64)
-                        time:   [187.02 µs 203.36 µs 214.10 µs]
-                        change: [+10067% +10568% +11149%] (p = 0.00 < 0.05)
+                        time:   [318.81 µs 333.07 µs 347.75 µs]
+                        change: [+59.145% +72.375% +85.424%] (p = 0.00 < 0.05)
                         Performance has regressed.
+
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64) #2: Warmi
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64) #2: Colle
+Benchmarking PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64) #2: Analy
+PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64) #2
+                        time:   [952.37 ns 1.2980 µs 1.9083 µs]
+                        change: [-42.106% -26.369% -3.4552%] (p = 0.03 < 0.05)
+                        Performance has improved.
 Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) high mild
-
-PathOsamPlus::local_write/(Capacity: 16384 Blocksize: 64) #2
-                        time:   [1.7746 µs 1.8102 µs 1.8308 µs]
-                        change: [+111.09% +114.67% +118.41%] (p = 0.00 < 0.05)
-                        Performance has regressed.
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64) #2: Warmi
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64) #2: Colle
+Benchmarking PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64) #2: Analy
 PathOsamPlus::local_write/(Capacity: 65536 Blocksize: 64) #2
-                        time:   [1.7933 µs 1.8261 µs 1.8438 µs]
-                        change: [+110.56% +114.84% +118.93%] (p = 0.00 < 0.05)
-                        Performance has regressed.
+                        time:   [893.33 ns 904.54 ns 917.87 ns]
+                        change: [-50.234% -48.899% -47.465%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64) #2: War
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64) #2: Col
+Benchmarking PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64) #2: Ana
 PathOsamPlus::local_write/(Capacity: 1048576 Blocksize: 64) #2
-                        time:   [1.7873 µs 1.8375 µs 1.8761 µs]
-                        change: [+113.46% +117.49% +122.63%] (p = 0.00 < 0.05)
-                        Performance has regressed.
+                        time:   [960.30 ns 2.4920 µs 4.7444 µs]
+                        change: [-45.332% -11.508% +53.131%] (p = 0.79 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
 
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 64, Ops
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 64, Ops: 64): Warming up for 100.00 ms
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 108.2ms.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 64, Ops
+Benchmarking PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 64, Ops
 PathOsamPlus::random_operations/(Capacity: 16384 Blocksize: 64, Ops: 64)
-                        time:   [9.2614 ms 9.2798 ms 9.2988 ms]
-                        change: [+263.76% +264.69% +265.61%] (p = 0.00 < 0.05)
+                        time:   [10.063 ms 10.364 ms 10.642 ms]
+                        change: [+8.3974% +11.687% +14.253%] (p = 0.00 < 0.05)
                         Performance has regressed.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 64, Ops
 Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 64, Ops: 64): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 126.3ms.
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 148.8ms.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 64, Ops
+Benchmarking PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 64, Ops
 PathOsamPlus::random_operations/(Capacity: 65536 Blocksize: 64, Ops: 64)
-                        time:   [12.296 ms 12.355 ms 12.420 ms]
-                        change: [+349.57% +351.70% +354.27%] (p = 0.00 < 0.05)
+                        time:   [13.891 ms 14.148 ms 14.388 ms]
+                        change: [+12.483% +14.506% +16.637%] (p = 0.00 < 0.05)
                         Performance has regressed.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 64, O
 Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 64, Ops: 64): Warming up for 100.00 ms
-Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 205.8ms.
+Warning: Unable to complete 10 samples in 100.0ms. You may wish to increase target time to 376.3ms.
+Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 64, O
+Benchmarking PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 64, O
 PathOsamPlus::random_operations/(Capacity: 1048576 Blocksize: 64, Ops: 64)
-                        time:   [20.683 ms 20.953 ms 21.269 ms]
-                        change: [+352.85% +358.41% +366.25%] (p = 0.00 < 0.05)
+                        time:   [23.441 ms 24.926 ms 27.151 ms]
+                        change: [+11.552% +18.960% +28.452%] (p = 0.00 < 0.05)
                         Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
 
 Each read and write read a root-to-leaf path of data. Additionally, both also deterministically download an eviction path. The eviction path may coincide with the first path read, so only `height` blocks are downloaded. At worst, the eviction path, besides the root, is completely different than the first path. This means `2*height - 1` buckets are downloaded. Writes are always the same since we evict one deterministic path.
 

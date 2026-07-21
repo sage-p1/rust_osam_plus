@@ -189,12 +189,11 @@ fn benchmark_write<const B: BlockSize, const Z: BucketSize, const P: PathCount>(
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
             |b| {
-                let address = osam_plus.alloc(&mut rng).unwrap();
                 b.iter(|| {
                     let ordered_evict = rng.gen_bool(0.5);
                     let _ = osam_plus.write(
-                        address.0,
-                        address.1,
+                        1,
+                        *capacity - 1,
                         BlockValue::<B>::default(),
                         ordered_evict,
                         &mut rng,
@@ -235,7 +234,6 @@ fn benchmark_local_write<const B: BlockSize, const Z: BucketSize, const P: PathC
     c: &mut Criterion,
 ) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::local_write");
-    let mut rng = StdRng::seed_from_u64(0);
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
         let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
             *capacity,
@@ -247,10 +245,7 @@ fn benchmark_local_write<const B: BlockSize, const Z: BucketSize, const P: PathC
                 capacity: *capacity,
                 block_size: mem::size_of::<BlockValue<B>>(),
             }),
-            |b| {
-                let address = osam_plus.alloc(&mut rng).unwrap();
-                b.iter(|| osam_plus.local_write(address.0, address.1, BlockValue::<B>::default()))
-            },
+            |b| b.iter(|| osam_plus.local_write(1, *capacity - 1, BlockValue::<B>::default())),
         );
     }
 }

@@ -92,12 +92,11 @@ pub(crate) fn read_then_write<T: OsamPlus>(
     init_logger();
     let mut rng = StdRng::seed_from_u64(0);
 
-    // Generate a sequence of allocs and write a random value.
+    // Generate a sequence of allocs to read and then write a random value.
     for _ in 0..num_operations {
         let address = osam_plus.alloc(&mut rng).unwrap();
         let identifier = address.0;
         let position = address.1;
-
         let ordered_evict = rng.gen_bool(probability);
         assert_eq!(
             osam_plus
@@ -164,6 +163,7 @@ pub(crate) fn interspersed_write_and_read<T: OsamPlus>(
         let identifier = address.0;
         let position = address.1;
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -203,6 +203,7 @@ pub(crate) fn interspersed_write_and_read<T: OsamPlus>(
         let identifier = address.0;
         let position = address.1;
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -249,6 +250,7 @@ pub(crate) fn overwrite_then_read<T: OsamPlus>(
         for (address, random_block_value) in mirror_hash_map.iter_mut() {
             *random_block_value = rng.gen::<T::V>();
             let ordered_evict = rng.gen_bool(probability);
+
             let _ = osam_plus.write(
                 address.0,
                 address.1,
@@ -264,6 +266,7 @@ pub(crate) fn overwrite_then_read<T: OsamPlus>(
         let identifier = address.0;
         let position = address.1;
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -312,6 +315,7 @@ pub(crate) fn interspersed_overwrite_then_read<T: OsamPlus>(
         }
         *random_block_value = rng.gen::<T::V>();
         let ordered_evict = rng.gen_bool(probability);
+
         let _ = osam_plus.write(
             address.0,
             address.1,
@@ -330,6 +334,7 @@ pub(crate) fn interspersed_overwrite_then_read<T: OsamPlus>(
             break;
         }
         *random_block_value = rng.gen::<T::V>();
+
         let ordered_evict = rng.gen_bool(probability);
         let _ = osam_plus.write(
             address.0,
@@ -363,6 +368,7 @@ pub(crate) fn interspersed_overwrite_then_read<T: OsamPlus>(
         let identifier = address.0;
         let position = address.1;
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -391,6 +397,7 @@ pub(crate) fn local_write_then_read<V: OsamPlusBlock, const Z: BucketSize, const
         let identifier = address.0;
         let position = address.1;
         let random_block_value = rng.gen::<V>();
+
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.local_write(identifier, position, random_block_value);
     }
@@ -437,6 +444,7 @@ pub(crate) fn locally_interspersed_write_and_read<
         let identifier = address.0;
         let position = address.1;
         let random_block_value = rng.gen::<V>();
+
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.local_write(identifier, position, random_block_value);
     }
@@ -446,6 +454,7 @@ pub(crate) fn locally_interspersed_write_and_read<
         let identifier = address.0;
         let position = address.1;
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -479,6 +488,7 @@ pub(crate) fn locally_interspersed_write_and_read<
         let identifier = address.0;
         let position = address.1;
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -507,6 +517,7 @@ pub(crate) fn local_overwrite_then_read<V: OsamPlusBlock, const Z: BucketSize, c
         let identifier = address.0;
         let position = address.1;
         let random_block_value = rng.gen::<V>();
+
         mirror_hash_map.insert(address, random_block_value);
         let _ = osam_plus.local_write(identifier, position, random_block_value);
     }
@@ -522,6 +533,7 @@ pub(crate) fn local_overwrite_then_read<V: OsamPlusBlock, const Z: BucketSize, c
         let identifier = address.0;
         let position = address.1;
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -555,6 +567,7 @@ pub(crate) fn local_overwrite_then_read_multi_paths<
         let identifier = address.0;
         let position = address.1;
         let random_block_value = rng.gen::<V>();
+
         mirror_address_map.insert(i, address);
         mirror_value_map.insert(i, random_block_value);
         let _ = osam_plus.local_write(identifier, position, random_block_value);
@@ -570,6 +583,7 @@ pub(crate) fn local_overwrite_then_read_multi_paths<
             mirror_value_map.insert(i, random_block_value);
             batch.push((address.0, address.1, random_block_value));
         }
+
         // Add one more address to read to evict P paths.
         let address = osam_plus.alloc(&mut rng).unwrap();
         let random_block_value = rng.gen::<V>();
@@ -592,6 +606,7 @@ pub(crate) fn local_overwrite_then_read_multi_paths<
         let position = address.1;
         let random_block_value = mirror_value_map[&i];
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read_multi_paths(identifier, position, ordered_evict, &mut rng)
@@ -627,6 +642,7 @@ pub(crate) fn local_overwrite_and_evict_then_read<
         let identifier = address.0;
         let position = address.1;
         let random_block_value = rng.gen::<V>();
+
         mirror_address_map.insert(i, address);
         mirror_value_map.insert(i, random_block_value);
         let _ = osam_plus.local_write(identifier, position, random_block_value);
@@ -638,9 +654,11 @@ pub(crate) fn local_overwrite_and_evict_then_read<
             let i = rng.gen_range(0..num_operations);
             let address = mirror_address_map[&i];
             let random_block_value = rng.gen::<V>();
+
             mirror_value_map.insert(i, random_block_value);
             let _ = osam_plus.local_write(address.0, address.1, random_block_value);
         }
+
         let ordered_evict = rng.gen_bool(probability);
         let _ = osam_plus.evict(ordered_evict, &mut rng);
     }
@@ -651,6 +669,7 @@ pub(crate) fn local_overwrite_and_evict_then_read<
             let i = rng.gen_range(0..num_operations);
             let address = mirror_address_map[&i];
             let random_block_value = rng.gen::<V>();
+
             mirror_value_map.insert(i, random_block_value);
             let _ = osam_plus.local_write(address.0, address.1, random_block_value);
         }
@@ -665,6 +684,7 @@ pub(crate) fn local_overwrite_and_evict_then_read<
         let position = address.1;
         let random_block_value = mirror_value_map[&i];
         let ordered_evict = rng.gen_bool(probability);
+
         assert_eq!(
             osam_plus
                 .read(identifier, position, ordered_evict, &mut rng)
@@ -895,7 +915,7 @@ macro_rules! create_path_osam_plus_stash_size_correctness_tests {
     };
 }
 
-// Interface that shares OsamPlus trait to ensure the stash does not overflow with small enough parameters
+// Interface that shares OsamPlus trait to ensure the stash does not overflow with small enough parameters.
 #[derive(Debug)]
 pub(crate) struct StashSizeMonitor<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> {
     osam_plus: PathOsamPlus<V, Z, P>,

@@ -367,9 +367,8 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         Ok(())
     }
 
-    /// Calculates the next position to evict.
+    /// Calculates the next position to evict via reverse-lexicographic ordering.
     fn evict_position(&mut self) -> Result<TreeIndex, OsamPlusError> {
-        // Deterministically evict buckets in reverse-lexicographic ordering.
         let mut evict_position: TreeIndex = self.evict_counter;
         let height: u32 = self.height.try_into()?;
         let number_of_leaves = 2u64.pow(height);
@@ -477,10 +476,10 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
             let bucket = self.physical_memory[i];
             for block in bucket.blocks.iter() {
                 if block.ct_is_dummy().into() {
-                    print!("(dummy) | ");
+                    print!("(dummy) ");
                 } else {
                     print!(
-                        "({}, {}, {:?}) | ",
+                        "({}, {}, {:?}) ",
                         block.identifier, block.position, block.value
                     );
                 }

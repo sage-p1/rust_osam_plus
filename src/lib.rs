@@ -59,8 +59,8 @@
 //!     addresses[i] = address;
 //!     let identifier = address.0;
 //!     let position = address.1;
-//!     let ordered_eviction = rng.gen_bool(0.5);
-//!     let _ = osam_plus.write(identifier, position, BlockValue::new(*bytes), ordered_eviction, &mut rng)?;
+//!     let ordered_evict = rng.gen_bool(0.5);
+//!     let _ = osam_plus.write(identifier, position, BlockValue::new(*bytes), ordered_evict, &mut rng)?;
 //! }
 //!
 //! // Now you can safely make secret-dependent accesses to your database.
@@ -68,8 +68,8 @@
 //!     let address = addresses[i];
 //!     let identifier = address.0;
 //!     let position = address.1;
-//!     let ordered_eviction = rng.gen_bool(0.5);
-//!     let bytes = osam_plus.read(identifier, position, ordered_eviction, &mut rng)?.unwrap();
+//!     let ordered_evict = rng.gen_bool(0.5);
+//!     let bytes = osam_plus.read(identifier, position, ordered_evict, &mut rng)?.unwrap();
 //!     assert_eq!(bytes, BlockValue::new(DATABASE[i]));
 //! }
 //!

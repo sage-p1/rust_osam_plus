@@ -35,7 +35,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
 impl<V: OsamPlusBlock> ObliviousStash<V> {
     // Create a stash of size `reserve_space + overflow_size`. The first `reserve_space` indices
     // are used for downloading and uploading paths from the server. Excluding the first
-    // `path_size` indices, the stash is filled out by real blocks from left to right.
+    // `reserve_space` indices, the stash is filled out by real blocks from left to right.
     // `reserve_space` holds up to P+1 paths.
     pub fn new<const Z: BucketSize, const P: PathCount>(
         height: StashSize,
@@ -49,6 +49,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         let mut doubling_factor = 1;
         let mut offset = 1;
         let mut turns_until_double = 1;
+
         for _ in 0..P {
             reserve_space += StashSize::try_from(Z)? * (height + 1 - offset);
             turns_until_double -= 1;
@@ -164,9 +165,9 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
                     assigned |= !no_op;
                 }
 
-                // Real blocks that are assigned to the overflow have the assignment `TreeIndex::Max-1` so
+                // Real blocks that are assigned to the overflow have the assignment `TreeIndex::Max - 1` so
                 // they appear at the start of the stash / end of `reserve_space` before any dummy blocks.
-                // Assign dummy blocks to `TreeIndex::Max-2` to pad out `reserve_space` so they appear
+                // Assign dummy blocks to `TreeIndex::Max - 2` to pad out `reserve_space` so they appear
                 // before any real blocks that were assigned to the overflow.
                 let open_reserve_space = reserve_to_fill.ct_ne(&0);
                 let reserve_to_fill_decremented = reserve_to_fill.saturating_sub(1);
@@ -205,7 +206,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
             }
         }
 
-        // Sort stash so the first `path_size` blocks align with their assigned buckets.
+        // Sort stash so the first `reserve_space` blocks align with their assigned buckets.
         bitonic_sort_by_keys(&mut self.blocks, &mut bucket_assignments);
 
         // Write the number of blocks downloaded from P paths back to the server.
@@ -223,9 +224,9 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         Ok(())
     }
 
-    // Read several server-side paths from root to leaf into the first `reserve_space`
-    // indices, which are slots reserved for downloading and uploading blocks.
-    // Ensures buckets in overlapping paths are read exactly once.
+    /// Read several server-side paths from root to leaf into the first `reserve_space`
+    /// indices, which are slots reserved for downloading and uploading blocks.
+    /// Ensures buckets in overlapping paths are read exactly once.
     pub fn read_from_paths<const Z: BucketSize, const P: PathCount>(
         &mut self,
         height: TreeHeight,
@@ -266,7 +267,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         Ok(())
     }
 
-    /// Write block to stash by overwritten the leftmost dummy block.
+    /// Write block to stash by overwriting the leftmost dummy block.
     pub fn write_to_stash(
         &mut self,
         identifier: Identifier,
@@ -282,6 +283,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
 
         // Overwrite the first dummy block.
         let mut assigned = Choice::from(0);
+
         // Skip the first `reserve_space` indices in the stash, since these are
         // overwritten upon calling `read_from_paths`.
         for block in self
@@ -473,7 +475,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
             let block = self.blocks[i];
             if (!block.ct_is_dummy()).into() {
                 print!(
-                    "({}, {}, {:?}) | ",
+                    "({}, {}, {:?}) ",
                     block.identifier, block.position, block.value
                 );
             }
