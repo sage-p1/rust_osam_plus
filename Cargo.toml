@@ -17,6 +17,8 @@ subtle = "2"
 rand = "0.8"
 log = "0.4"
 thiserror = "1"
+aes-gcm = "0.11.0"
+cipher = "0.5"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

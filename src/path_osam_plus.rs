@@ -14,6 +14,10 @@ use crate::{
     BucketSize, CounterSize, Identifier, OsamPlus, OsamPlusBlock, OsamPlusError, PathCount,
     StashSize,
 };
+use aes_gcm::{
+    aead::{Generate, Key, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use bit_reverse::ParallelReverse;
 use rand::{CryptoRng, Rng};
 use std::collections::HashMap;
@@ -70,7 +74,8 @@ pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 #[derive(Debug)]
 pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> {
     /// The underlying untrusted memory that the OSAM+ is obliviously accessing on behalf of its client.
-    physical_memory: Vec<Bucket<V, Z>>,
+    /// Buckets are encrypted using `Aes256Gcm`.
+    physical_memory: Vec<Vec<u8>>,
     /// The Path OSAM+ stash.
     stash: ObliviousStash<V>,
     /// The height of the Path OSAM+ tree data structure.
@@ -146,15 +151,34 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
             });
         }
 
-        let number_of_nodes = block_capacity;
-        let height: StashSize = (block_capacity.ilog2() - 1).into();
-        let stash = ObliviousStash::new::<Z, P>(height, overflow_size)?;
+        // Convert this number to usize for reuse several times later.
+        let backend_size = usize::try_from(block_capacity - 1)?;
 
-        // `physical_memory` holds `block_capacity` buckets, each storing up to Z blocks.
+        // Generate key, cipher, and vector of unique nonces (one for each bucket) for encryption.
+        let key = Key::<Aes256Gcm>::generate();
+        let cipher = Aes256Gcm::new(&key);
+        let mut nonces = Vec::new();
+        while nonces.len() < backend_size {
+            let nonce = Nonce::generate();
+            if !nonces.contains(&nonce) {
+                nonces.push(nonce);
+            }
+        }
+
+        // Initialize stash with nonces, the cipher, and overflow space.
+        let height: StashSize = (block_capacity.ilog2() - 1).into();
+        let mut stash = ObliviousStash::new::<Z, P>(height, overflow_size, cipher, nonces)?;
+
+        // `physical_memory` holds `block_capacity - 1` buckets, each storing up to Z blocks.
         // The number of leaves is `block_capacity` / 2, which the original Path ORAM paper's experiments
         // found was sufficient to keep the stash size small with high probability.
+        let mut buckets = Vec::new();
+        buckets.resize(backend_size, Bucket::<V, Z>::default());
         let mut physical_memory = Vec::new();
-        physical_memory.resize(usize::try_from(number_of_nodes)?, Bucket::<V, Z>::default());
+        for (i, bucket) in buckets.iter().enumerate().take(backend_size) {
+            let ciphertext = stash.encrypt_bucket(*bucket, i);
+            physical_memory.push(ciphertext);
+        }
 
         // Initialize other parameters.
         let identifier_counter: Identifier = 1;
@@ -468,25 +492,25 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         self.round_trip_counter
     }
 
-    /// Print blocks in physical memory for debug purposes.
-    pub fn print_physical_memory(&self) {
-        println!("Physical Memory: ");
-        for i in 1..(self.physical_memory.len()) {
-            print!("BUCKET {}: ", i);
-            let bucket = self.physical_memory[i];
-            for block in bucket.blocks.iter() {
-                if block.ct_is_dummy().into() {
-                    print!("(dummy) ");
-                } else {
-                    print!(
-                        "({}, {}, {:?}) ",
-                        block.identifier, block.position, block.value
-                    );
-                }
-            }
-            println!();
-        }
-    }
+    // /// Print blocks in physical memory for debug purposes.
+    // pub fn print_physical_memory(&self) {
+    //     println!("Physical Memory: ");
+    //     for i in 1..(self.physical_memory.len()) {
+    //         print!("BUCKET {}: ", i);
+    //         let bucket = self.physical_memory[i];
+    //         for block in bucket.blocks.iter() {
+    //             if block.ct_is_dummy().into() {
+    //                 print!("(dummy) ");
+    //             } else {
+    //                 print!(
+    //                     "({}, {}, {:?}) ",
+    //                     block.identifier, block.position, block.value
+    //                 );
+    //             }
+    //         }
+    //         println!();
+    //     }
+    // }
 
     /// Print blocks in stash for debug purposes.
     pub fn print_stash(&self) {

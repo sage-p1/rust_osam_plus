@@ -125,7 +125,7 @@ pub(crate) mod stash;
 mod test_utils;
 pub(crate) mod utils;
 
-pub use crate::bucket::BlockValue;
+pub use crate::bucket::{BlockValue, LowLevelBytes};
 pub use crate::path_osam_plus::PathOsamPlus;
 pub use crate::utils::TreeIndex;
 
@@ -144,7 +144,7 @@ pub type CounterSize = u64;
 
 /// A "trait alias" for OSAM+ blocks: the values read and written by Path OSAM+s.
 pub trait OsamPlusBlock:
-    Copy + Clone + std::fmt::Debug + Default + PartialEq + ConditionallySelectable
+    Copy + Clone + std::fmt::Debug + Default + PartialEq + ConditionallySelectable + LowLevelBytes
 {
 }
 
