@@ -41,7 +41,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         height: StashSize,
         overflow_size: StashSize,
     ) -> Result<Self, OsamPlusError> {
-        // Allocate enough space to contain the maximum number of slots possible along P+1 paths.
+        // Allocate enough space to contain the maximum number of slots possible along P + 1 paths.
         // Account for the number of times a path length is possible when buckets can only be
         // traversed once.
         let path_size: StashSize = StashSize::try_from(Z)? * (height + 1);
@@ -212,7 +212,11 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         // Write P paths back to the server.
         let mut offset: usize = 0;
         for &bucket_index in buckets.iter() {
-            backend.write_bucket_to_stash(&mut self.blocks, usize::try_from(bucket_index)?, offset);
+            backend.write_bucket_from_stash(
+                &mut self.blocks,
+                usize::try_from(bucket_index)?,
+                offset,
+            );
             offset += Z;
         }
 
@@ -228,7 +232,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         backend: &mut Backend<V, Z>,
         positions: &HashSet<TreeIndex>,
     ) -> Result<(), OsamPlusError> {
-        // This function can be called by `read` or `read_multi_paths`, which read either 2 or P+1 paths.
+        // This function can be called by `read` or `read_multi_paths`, which read either 2 or P + 1 paths.
         // If the path to read is the same as the evict path(s), then this drops to 1 or P paths.
         assert!(
             positions.len() == 1
@@ -238,7 +242,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         );
 
         // Download from all buckets along all specified paths.
-        // Buckets only need to be accesses once.
+        // Buckets only need to be accessed once.
         let mut checked_buckets = HashSet::new();
         let mut offset: usize = 0;
         for position in positions.iter() {
@@ -459,7 +463,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
 
     /// Print blocks in stash for debug purposes.
     pub fn print_stash(&self) {
-        print!("STASH: ");
+        print!("Stash: ");
         for i in self.reserve_space.try_into().unwrap()..self.blocks.len() {
             let block = self.blocks[i];
             if (!block.ct_is_dummy()).into() {

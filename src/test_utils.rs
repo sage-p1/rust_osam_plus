@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::sync::Once;
 static INIT: Once = Once::new();
-// use crate::path_osam_plus::PathOsamPlus;
 use crate::{
     BucketSize, Identifier, OsamPlus, OsamPlusBlock, OsamPlusError, PathCount, PathOsamPlus,
     StashSize, TreeIndex,
@@ -23,6 +22,7 @@ use rand::{
 };
 use simplelog::{Config, WriteLogger};
 
+// use crate::path_osam_plus::PathOsamPlus;
 // For use in manual testing and inspection.
 // Change log_level to "Warn" to see stash overflow events, and to "Debug" to additionally see OSAM+ initialization events.
 pub(crate) fn init_logger() {

@@ -21,8 +21,8 @@ const DATABASE: [[u8; BLOCK_SIZE as usize]; DB_SIZE as usize] =
     [[0; BLOCK_SIZE as usize]; DB_SIZE as usize];
 
 fn main() -> Result<(), OsamPlusError> {
-    let is_encrypted = true;
     let mut rng = OsRng;
+    let is_encrypted = rng.gen_bool(0.5);
     let mut osam_plus = PathOsamPlus::<
         BlockValue<BLOCK_SIZE>,
         DEFAULT_BLOCKS_PER_BUCKET,

@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let capacity = parse_u64("\nEnter a power of two:", &mut rl)?;
 
-    let is_encrypted = true;
+    let is_encrypted = rng.gen_bool(0.5);
 
     // Initialize an OSAM+ storing `capacity` u64s.
     let mut osam_plus = PathOsamPlus::<u64, DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT>::new(

@@ -94,7 +94,9 @@ impl EncryptedBackend {
         // `physical_memory`. `decrypt_bucket` always chooses a new unique nonce to avoid repetition.
         // Because the bucket is not uploaded back to the server, `physical_memory` still has the old
         // data corresponding to the old nonce. Decrypting the old data with a new nonce fails, but this
-        // behavior is fine because the data is outdated and need not be recovered.
+        // behavior is fine because the data is outdated and need not be recovered. To avoid decryption
+        // errors or using old data, the other approach is to encrypt a dummy bucket in place of the
+        // single read path.
         let output: Option<Bucket<V, Z>>;
         let result = self.cipher.decrypt(&nonce, ciphertext.as_ref());
         match result {
@@ -138,7 +140,7 @@ impl EncryptedBackend {
         }
     }
 
-    pub fn write_bucket_to_stash<V: OsamPlusBlock, const Z: BucketSize>(
+    pub fn write_bucket_from_stash<V: OsamPlusBlock, const Z: BucketSize>(
         &mut self,
         blocks: &mut [PathOsamPlusBlock<V>],
         bucket_index: usize,
@@ -158,7 +160,7 @@ impl EncryptedBackend {
         println!("Physical Memory: ");
         let mut blocks = vec![PathOsamPlusBlock::<V>::dummy(); Z];
         for i in 1..(self.block_capacity() + 1) {
-            print!("BUCKET {}: ", i);
+            print!("Bucket {}: ", i);
             self.read_bucket_to_stash::<V, Z>(&mut blocks, i, 0);
             for block in blocks.iter().take(Z) {
                 if block.ct_is_dummy().into() {
@@ -170,7 +172,7 @@ impl EncryptedBackend {
                     );
                 }
             }
-            self.write_bucket_to_stash::<V, Z>(&mut blocks, i, 0);
+            self.write_bucket_from_stash::<V, Z>(&mut blocks, i, 0);
             println!();
         }
     }
@@ -211,7 +213,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PlaintextBackend<V, Z> {
         offset + 1
     }
 
-    pub fn write_bucket_to_stash(
+    pub fn write_bucket_from_stash(
         &mut self,
         blocks: &mut [PathOsamPlusBlock<V>],
         bucket_index: usize,
@@ -228,7 +230,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PlaintextBackend<V, Z> {
     pub fn print_physical_memory(&self) {
         println!("Physical Memory: ");
         for i in 0..(self.physical_memory.len()) {
-            print!("BUCKET {}: ", i + 1);
+            print!("Bucket {}: ", i + 1);
             let bucket = self.physical_memory[i];
             for block in bucket.blocks.iter() {
                 if block.ct_is_dummy().into() {
@@ -288,7 +290,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize> Backend<V, Z> {
         }
     }
 
-    pub fn write_bucket_to_stash(
+    pub fn write_bucket_from_stash(
         &mut self,
         blocks: &mut [PathOsamPlusBlock<V>],
         bucket_index: usize,
@@ -296,9 +298,9 @@ impl<V: OsamPlusBlock, const Z: BucketSize> Backend<V, Z> {
     ) {
         match &mut self.0 {
             BackendMethod::Encrypted(e) => {
-                e.write_bucket_to_stash::<V, Z>(blocks, bucket_index, offset)
+                e.write_bucket_from_stash::<V, Z>(blocks, bucket_index, offset)
             }
-            BackendMethod::Plaintext(p) => p.write_bucket_to_stash(blocks, bucket_index, offset),
+            BackendMethod::Plaintext(p) => p.write_bucket_from_stash(blocks, bucket_index, offset),
         }
     }
 

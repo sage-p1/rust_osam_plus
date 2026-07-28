@@ -33,10 +33,11 @@
 //! The below example reads a database from memory into a Path OSAM+, thus permitting secret-dependent accesses.
 //!
 //! ```
-//! use osam_plus::{BlockSize, BlockValue, Identifier, OsamPlus, PathOsamPlus, TreeIndex};
-//! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE};
+//! use osam_plus::{
+//!     path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE},
+//!     BlockSize, BlockValue, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, TreeIndex,
+//! };
 //! use rand::{rngs::OsRng, Rng};
-//! use osam_plus::OsamPlusError;
 //!
 //! const BLOCK_SIZE: BlockSize = 64;
 //! const DB_SIZE: Identifier = 64;
@@ -45,7 +46,7 @@
 //! let mut rng = OsRng;
 //! let mut addresses: [(Identifier, TreeIndex); DB_SIZE as usize] =  
 //! [(Identifier::MAX, 0); DB_SIZE as usize];
-//! let is_encrypted = true;
+//! let is_encrypted = rng.gen_bool(0.5);;
 //!
 //! // Initialize a Path OSAM+ to store 64 blocks of 64 bytes each.
 //! let mut osam_plus = PathOsamPlus::<
@@ -89,14 +90,14 @@
 //! interface which exposes these parameters.
 //!
 //! ```
-//! use osam_plus::{BlockSize, BlockValue, BucketSize,
-//!             Identifier, OsamPlus, PathOsamPlus, StashSize};
-//! use osam_plus::path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE};
+//! use osam_plus::{
+//!     path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE},
+//!     BlockSize, BlockValue, BucketSize, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, StashSize,
+//! };
 //! use rand::{rngs::OsRng, Rng};
 //!
-//! use osam_plus::OsamPlusError;
 //! let mut rng = OsRng;
-//! let is_encrypted = true;
+//! let is_encrypted = rng.gen_bool(0.5);
 //! const BLOCK_SIZE: BlockSize = 64;
 //! const DB_SIZE: Identifier = 64;
 //!

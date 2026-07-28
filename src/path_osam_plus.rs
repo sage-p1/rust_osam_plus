@@ -63,13 +63,13 @@ pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 /// in the stash. Secondly, we introduce another function `read_multi_paths` that downloads and evicts P
 /// paths every round-trip, instead of just one, to greatly improve how often we merge old blocks.
 /// `read_multi_paths` downloads the P+1 paths (requested path and P evict paths). P is a constant
-/// that is set upon initialization such that 1 <= P <= (N/2)-1. When P=1, `read_multi_paths` and
-/// `read` behave the same. When P=(N/2)-1, P+1=N/2 paths are read, which means the entire server.
-/// A special exception for N=2 is that P can only be 0.
+/// that is set upon initialization such that 1 <= P <= (N / 2) - 1. When P = 1, `read_multi_paths` and
+/// `read` behave the same. When P = (N / 2) - 1, P + 1 = N / 2 paths are read, which means the entire server.
+/// A special exception for N = 2 is that P can only be 0.
 #[derive(Debug)]
 pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> {
     /// The underlying untrusted memory that the OSAM+ is obliviously accessing on behalf of its client.
-    /// Buckets are encrypted using `Aes256Gcm`.
+    /// Buckets are either encrypted using `Aes256Gcm` or stored as plaintext.
     backend: Backend<V, Z>,
     /// The Path OSAM+ stash.
     stash: ObliviousStash<V>,
@@ -150,7 +150,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         // Initialize backend method for storing physical memory (encrypted or plaintext).
         let backend = Backend::<V, Z>::new(block_capacity, is_encrypted)?;
 
-        // Initialize stash with nonces, the cipher, and overflow space.
+        // Initialize stash.
         let height: StashSize = (block_capacity.ilog2() - 1).into();
         let stash = ObliviousStash::new::<Z, P>(height, overflow_size)?;
 
@@ -179,7 +179,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         })
     }
 
-    /// Reads a single value while evicting P paths. Downloads P+1, or P if the
+    /// Reads a single value while evicting P paths. Downloads P + 1, or P if the
     /// read path is also an evict path, paths.
     pub fn read_multi_paths<R: Rng + CryptoRng>(
         &mut self,
@@ -286,7 +286,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         Ok(())
     }
 
-    /// Evicts a single path without reading any value to return to the user
+    /// Evicts a single path without reading any value to return to the user.
     pub fn evict<R: Rng + CryptoRng>(
         &mut self,
         ordered_evict: bool,
@@ -323,7 +323,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         Ok(())
     }
 
-    /// Evicts a single path without reading any value to return to the user
+    /// Evicts a single path without reading any value to return to the user.
     pub fn evict_multi_paths<R: Rng + CryptoRng>(
         &mut self,
         ordered_evict: bool,
