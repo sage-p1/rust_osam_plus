@@ -13,8 +13,7 @@ use crate::{
     utils::{bitonic_sort_by_keys, CompleteBinaryTreeIndex, TreeHeight, TreeIndex},
     BucketSize, Identifier, OsamPlusBlock, OsamPlusError, PathCount, StashSize,
 };
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 const STASH_GROWTH_INCREMENT: usize = 10;

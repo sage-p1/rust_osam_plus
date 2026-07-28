@@ -16,8 +16,7 @@ use crate::{
 };
 use bit_reverse::ParallelReverse;
 use rand::{CryptoRng, Rng};
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The parameter "Z" from the Path ORAM literature that sets the number of blocks per bucket; typical values are 3 or 4.
 /// Here we adopt the more conservative setting of 4.

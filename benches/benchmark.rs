@@ -14,8 +14,7 @@ use osam_plus::{
     path_osam_plus::DEFAULT_STASH_OVERFLOW_SIZE, BlockSize, BlockValue, BucketSize, Identifier,
     OsamPlus, PathCount, PathOsamPlus, TreeIndex,
 };
-use std::mem;
-use std::time::Duration;
+use std::{mem, time::Duration};
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 

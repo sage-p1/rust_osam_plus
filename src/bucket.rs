@@ -12,8 +12,7 @@ use rand::{
     distributions::{Distribution, Standard},
     Rng,
 };
-use subtle::ConstantTimeEq;
-use subtle::{Choice, ConditionallySelectable};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 /// A trait that works with datatypes and translates them into or from byte vectors/arrays.
 /// This is necessary to work with `Aes256Gcm`, which only seems to encrypt references to `Vec<u8>` objects.

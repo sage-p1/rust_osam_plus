@@ -12,8 +12,7 @@ use osam_plus::{
     OsamPlus, PathOsamPlus,
 };
 use rand::{rngs::OsRng, Rng};
-use rustyline::history::FileHistory;
-use rustyline::Editor;
+use rustyline::{history::FileHistory, Editor};
 
 fn parse_u64(
     prompt: &str,
