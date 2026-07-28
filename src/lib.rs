@@ -45,13 +45,14 @@
 //! let mut rng = OsRng;
 //! let mut addresses: [(Identifier, TreeIndex); DB_SIZE as usize] =  
 //! [(Identifier::MAX, 0); DB_SIZE as usize];
+//! let is_encrypted = true;
 //!
 //! // Initialize a Path OSAM+ to store 64 blocks of 64 bytes each.
 //! let mut osam_plus = PathOsamPlus::<
 //!     BlockValue<BLOCK_SIZE>,
 //!     DEFAULT_BLOCKS_PER_BUCKET,
 //!     DEFAULT_PATH_COUNT,
-//!     >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
+//!     >::new(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE, is_encrypted)?;
 //!
 //! // Read a database (here, an array of byte arrays) into Path OSAM+.
 //! for (i, bytes) in DATABASE.iter().enumerate() {
@@ -95,6 +96,7 @@
 //!
 //! use osam_plus::OsamPlusError;
 //! let mut rng = OsRng;
+//! let is_encrypted = true;
 //! const BLOCK_SIZE: BlockSize = 64;
 //! const DB_SIZE: Identifier = 64;
 //!
@@ -105,7 +107,7 @@
 //!     BlockValue<BLOCK_SIZE>,
 //!     DEFAULT_BLOCKS_PER_BUCKET,
 //!     DEFAULT_PATH_COUNT,
-//!     >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
+//!     >::new(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE, is_encrypted)?;
 //! # Ok::<(), OsamPlusError>(())
 //! ```
 //!
@@ -113,11 +115,13 @@
 
 #![warn(clippy::cargo, clippy::doc_markdown, missing_docs, rustdoc::all)]
 
+use bucket::LowLevelBytes;
 use rand::{CryptoRng, Rng};
 use std::num::TryFromIntError;
 use subtle::ConditionallySelectable;
 use thiserror::Error;
 
+pub(crate) mod backend;
 pub(crate) mod bucket;
 pub mod path_osam_plus;
 pub(crate) mod stash;
@@ -125,9 +129,7 @@ pub(crate) mod stash;
 mod test_utils;
 pub(crate) mod utils;
 
-pub use crate::bucket::{BlockValue, LowLevelBytes};
-pub use crate::path_osam_plus::PathOsamPlus;
-pub use crate::utils::TreeIndex;
+pub use crate::{bucket::BlockValue, path_osam_plus::PathOsamPlus, utils::TreeIndex};
 
 /// The numeric type used to specify the size of an OSAM+ block in bytes.
 pub type BlockSize = usize;

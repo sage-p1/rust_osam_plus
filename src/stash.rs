@@ -8,15 +8,11 @@
 //! A structure of a Path OSAM+ stash.
 
 use crate::{
-    bucket::{Bucket, PathOsamPlusBlock},
+    backend::Backend,
+    bucket::PathOsamPlusBlock,
     utils::{bitonic_sort_by_keys, CompleteBinaryTreeIndex, TreeHeight, TreeIndex},
-    BucketSize, Identifier, LowLevelBytes, OsamPlusBlock, OsamPlusError, PathCount, StashSize,
+    BucketSize, Identifier, OsamPlusBlock, OsamPlusError, PathCount, StashSize,
 };
-use aes_gcm::{
-    aead::{Aead, Generate},
-    Aes256Gcm, Nonce,
-};
-use cipher::typenum::U12;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
@@ -29,8 +25,6 @@ pub struct ObliviousStash<V: OsamPlusBlock> {
     blocks: Vec<PathOsamPlusBlock<V>>,
     path_size: StashSize,
     reserve_space: StashSize,
-    cipher: Aes256Gcm,
-    nonces: Vec<Nonce<U12>>,
 }
 
 impl<V: OsamPlusBlock> ObliviousStash<V> {
@@ -47,8 +41,6 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
     pub fn new<const Z: BucketSize, const P: PathCount>(
         height: StashSize,
         overflow_size: StashSize,
-        cipher: Aes256Gcm,
-        nonces: Vec<Nonce<U12>>,
     ) -> Result<Self, OsamPlusError> {
         // Allocate enough space to contain the maximum number of slots possible along P+1 paths.
         // Account for the number of times a path length is possible when buckets can only be
@@ -75,67 +67,14 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
             blocks: vec![PathOsamPlusBlock::<V>::dummy(); num_stash_blocks],
             path_size,
             reserve_space,
-            cipher,
-            nonces,
         })
-    }
-
-    /// Encrypt a bucket with a nonce.
-    pub fn encrypt_bucket<const Z: BucketSize>(
-        &mut self,
-        bucket: Bucket<V, Z>,
-        index: usize,
-    ) -> Vec<u8> {
-        let nonce = self.nonces[index];
-        let plaintext = bucket.to_bytes_vec();
-        let ciphertext = self.cipher.encrypt(&nonce, plaintext.as_ref()).unwrap();
-
-        ciphertext
-    }
-
-    /// Decrypt a ciphertext with its nonce to produce a bucket.
-    pub fn decrypt_bucket<const Z: BucketSize>(
-        &mut self,
-        ciphertext: Vec<u8>,
-        index: usize,
-    ) -> Option<Bucket<V, Z>> {
-        let nonce = self.nonces[index];
-        // Attempt to decrypt ciphertext from nonce.
-        // Decryption may fail if the last time this bucket was decrypted, it was along a path
-        // that was not evicted. That is, the bucket was downloaded but not reuploaded back to
-        // `physical_memory`. `decrypt_bucket` always chooses a new unique nonce to avoid repetition.
-        // Because the bucket is not uploaded back to the server, `physical_memory` still has the old
-        // data corresponding to the old nonce. Decrypting the old data with a new nonce fails, but this
-        // behavior is fine because the data is outdated and need not be recovered.
-        let output: Option<Bucket<V, Z>>;
-        let result = self.cipher.decrypt(&nonce, ciphertext.as_ref());
-        match result {
-            Ok(plaintext) => {
-                let bucket = Bucket::<V, Z>::reconstruct(&plaintext);
-                output = Some(bucket);
-
-                // Generate a new unique nonce for the future.
-                loop {
-                    let nonce = Nonce::generate();
-                    if !self.nonces.contains(&nonce) {
-                        self.nonces[index] = nonce;
-                        break;
-                    }
-                }
-            }
-            Err(_) => {
-                output = None;
-            }
-        }
-
-        output
     }
 
     /// Write server-side path(s) from root to leaf.
     pub fn write_to_paths<const Z: BucketSize, const P: PathCount>(
         &mut self,
         height: TreeHeight,
-        physical_memory: &mut [Vec<u8>],
+        backend: &mut Backend<V, Z>,
         positions: HashSet<TreeIndex>,
     ) -> Result<(), OsamPlusError> {
         // This function is called by `write`, `read`, and `read_multi_paths` to evict either
@@ -271,19 +210,10 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
         // Sort stash so the first `reserve_space` blocks align with their assigned buckets.
         bitonic_sort_by_keys(&mut self.blocks, &mut bucket_assignments);
 
-        // Encrypt and write the number of blocks downloaded from P paths back to the server.
+        // Write P paths back to the server.
         let mut offset: usize = 0;
-        for &bucket in buckets.iter() {
-            // let bucket_to_write = &mut physical_memory[usize::try_from(bucket)?];
-            let i = usize::try_from(bucket)? - 1;
-            let mut bucket_to_write = Bucket::<V, Z>::default();
-            for slot_number in 0..Z {
-                let stash_index = offset + slot_number;
-                bucket_to_write.blocks[slot_number] = self.blocks[stash_index];
-                self.blocks[stash_index] = PathOsamPlusBlock::<V>::dummy();
-            }
-            let ciphertext = self.encrypt_bucket(bucket_to_write, i);
-            physical_memory[i] = ciphertext;
+        for &bucket_index in buckets.iter() {
+            backend.write_bucket_to_stash(&mut self.blocks, usize::try_from(bucket_index)?, offset);
             offset += Z;
         }
 
@@ -296,7 +226,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
     pub fn read_from_paths<const Z: BucketSize, const P: PathCount>(
         &mut self,
         height: TreeHeight,
-        physical_memory: &mut [Vec<u8>],
+        backend: &mut Backend<V, Z>,
         positions: &HashSet<TreeIndex>,
     ) -> Result<(), OsamPlusError> {
         // This function can be called by `read` or `read_multi_paths`, which read either 2 or P+1 paths.
@@ -319,15 +249,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
                 // Only traverse a bucket once.
                 if !checked_buckets.contains(&bucket_index) {
                     checked_buckets.insert(bucket_index);
-                    let ciphertext = physical_memory[bucket_index - 1].clone();
-
-                    // Ignore bucket if decryption fails.
-                    if let Some(bucket) = self.decrypt_bucket::<Z>(ciphertext, bucket_index - 1) {
-                        for slot_index in 0..Z {
-                            self.blocks[Z * offset + slot_index] = bucket.blocks[slot_index];
-                        }
-                        offset += 1;
-                    }
+                    offset = backend.read_bucket_to_stash(&mut self.blocks, bucket_index, offset);
                 }
             }
         }

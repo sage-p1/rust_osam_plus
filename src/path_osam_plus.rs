@@ -9,14 +9,10 @@
 
 use super::stash::ObliviousStash;
 use crate::{
-    bucket::Bucket,
+    backend::Backend,
     utils::{CompleteBinaryTreeIndex, TreeHeight, TreeIndex},
     BucketSize, CounterSize, Identifier, OsamPlus, OsamPlusBlock, OsamPlusError, PathCount,
     StashSize,
-};
-use aes_gcm::{
-    aead::{Generate, Key, KeyInit},
-    Aes256Gcm, Nonce,
 };
 use bit_reverse::ParallelReverse;
 use rand::{CryptoRng, Rng};
@@ -75,7 +71,7 @@ pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> {
     /// The underlying untrusted memory that the OSAM+ is obliviously accessing on behalf of its client.
     /// Buckets are encrypted using `Aes256Gcm`.
-    physical_memory: Vec<Vec<u8>>,
+    backend: Backend<V, Z>,
     /// The Path OSAM+ stash.
     stash: ObliviousStash<V>,
     /// The height of the Path OSAM+ tree data structure.
@@ -116,9 +112,10 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
     /// - `P`
     ///     - is not 0 when `block_capacity` is 2, or
     ///     - is 0 or exceeds the number of paths possible under (`block_capacity` / 2) - 1.
-    pub fn new_with_parameters(
+    pub fn new(
         block_capacity: Identifier,
         overflow_size: StashSize,
+        is_encrypted: bool,
     ) -> Result<Self, OsamPlusError> {
         log::info!("PathOsamPlus::new(capacity = {})", block_capacity,);
 
@@ -151,34 +148,12 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
             });
         }
 
-        // Convert this number to usize for reuse several times later.
-        let backend_size = usize::try_from(block_capacity - 1)?;
-
-        // Generate key, cipher, and vector of unique nonces (one for each bucket) for encryption.
-        let key = Key::<Aes256Gcm>::generate();
-        let cipher = Aes256Gcm::new(&key);
-        let mut nonces = Vec::new();
-        while nonces.len() < backend_size {
-            let nonce = Nonce::generate();
-            if !nonces.contains(&nonce) {
-                nonces.push(nonce);
-            }
-        }
+        // Initialize backend method for storing physical memory (encrypted or plaintext).
+        let backend = Backend::<V, Z>::new(block_capacity, is_encrypted)?;
 
         // Initialize stash with nonces, the cipher, and overflow space.
         let height: StashSize = (block_capacity.ilog2() - 1).into();
-        let mut stash = ObliviousStash::new::<Z, P>(height, overflow_size, cipher, nonces)?;
-
-        // `physical_memory` holds `block_capacity - 1` buckets, each storing up to Z blocks.
-        // The number of leaves is `block_capacity` / 2, which the original Path ORAM paper's experiments
-        // found was sufficient to keep the stash size small with high probability.
-        let mut buckets = Vec::new();
-        buckets.resize(backend_size, Bucket::<V, Z>::default());
-        let mut physical_memory = Vec::new();
-        for (i, bucket) in buckets.iter().enumerate().take(backend_size) {
-            let ciphertext = stash.encrypt_bucket(*bucket, i);
-            physical_memory.push(ciphertext);
-        }
+        let stash = ObliviousStash::new::<Z, P>(height, overflow_size)?;
 
         // Initialize other parameters.
         let identifier_counter: Identifier = 1;
@@ -191,7 +166,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         let round_trip_counter: CounterSize = 0;
 
         Ok(Self {
-            physical_memory,
+            backend,
             stash,
             height,
             identifier_counter,
@@ -239,7 +214,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Read path containing target block and eviction path.
         self.stash
-            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+            .read_from_paths::<Z, P>(self.height, &mut self.backend, &positions)?;
 
         // Remove duplicates.
         let _ = self.stash.merge();
@@ -254,7 +229,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Evict blocks from the stash along a single path.
         self.stash
-            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+            .write_to_paths::<Z, P>(self.height, &mut self.backend, positions)?;
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
@@ -332,14 +307,14 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Read path containing target block and eviction path.
         self.stash
-            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+            .read_from_paths::<Z, P>(self.height, &mut self.backend, &positions)?;
 
         // Remove duplicates.
         let _ = self.stash.merge();
 
         // Evict blocks from the stash along a single path.
         self.stash
-            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+            .write_to_paths::<Z, P>(self.height, &mut self.backend, positions)?;
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
@@ -374,14 +349,14 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Read path containing target block and eviction path.
         self.stash
-            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+            .read_from_paths::<Z, P>(self.height, &mut self.backend, &positions)?;
 
         // Remove duplicates.
         let _ = self.stash.merge();
 
         // Evict blocks from the stash along a single path.
         self.stash
-            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+            .write_to_paths::<Z, P>(self.height, &mut self.backend, positions)?;
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
@@ -492,25 +467,10 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         self.round_trip_counter
     }
 
-    // /// Print blocks in physical memory for debug purposes.
-    // pub fn print_physical_memory(&self) {
-    //     println!("Physical Memory: ");
-    //     for i in 1..(self.physical_memory.len()) {
-    //         print!("BUCKET {}: ", i);
-    //         let bucket = self.physical_memory[i];
-    //         for block in bucket.blocks.iter() {
-    //             if block.ct_is_dummy().into() {
-    //                 print!("(dummy) ");
-    //             } else {
-    //                 print!(
-    //                     "({}, {}, {:?}) ",
-    //                     block.identifier, block.position, block.value
-    //                 );
-    //             }
-    //         }
-    //         println!();
-    //     }
-    // }
+    /// Print blocks in physical memory for debug purposes.
+    pub fn print_physical_memory(&mut self) {
+        self.backend.print_physical_memory();
+    }
 
     /// Print blocks in stash for debug purposes.
     pub fn print_stash(&self) {
@@ -523,7 +483,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for Pat
 
     /// Returns the capacity in blocks of this OSAM+.
     fn block_capacity(&self) -> usize {
-        self.physical_memory.len()
+        self.backend.block_capacity()
     }
 
     /// Allocates a valid `Identifier` and `TreeIndex` to be used for reading and writing.
@@ -576,7 +536,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for Pat
 
         // Download dummy path and evict path.
         self.stash
-            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+            .read_from_paths::<Z, P>(self.height, &mut self.backend, &positions)?;
 
         // Remove duplicates.
         let _ = self.stash.merge();
@@ -588,7 +548,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for Pat
 
         // Evict blocks from the stash along a single path.
         self.stash
-            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+            .write_to_paths::<Z, P>(self.height, &mut self.backend, positions)?;
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
@@ -625,7 +585,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for Pat
 
         // Read path containing target block and eviction path.
         self.stash
-            .read_from_paths::<Z, P>(self.height, &mut self.physical_memory, &positions)?;
+            .read_from_paths::<Z, P>(self.height, &mut self.backend, &positions)?;
 
         // Remove duplicates.
         let _ = self.stash.merge();
@@ -640,7 +600,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for Pat
 
         // Evict blocks from the stash along a single path.
         self.stash
-            .write_to_paths::<Z, P>(self.height, &mut self.physical_memory, positions)?;
+            .write_to_paths::<Z, P>(self.height, &mut self.backend, positions)?;
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();

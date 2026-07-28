@@ -8,10 +8,8 @@
 //! An example of using Path OSAM+ to obliviously serve an indexed database.
 
 extern crate osam_plus;
-use osam_plus::path_osam_plus::{
-    DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE,
-};
 use osam_plus::{
+    path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE},
     BlockSize, BlockValue, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, TreeIndex,
 };
 use rand::{rngs::OsRng, Rng};
@@ -23,12 +21,13 @@ const DATABASE: [[u8; BLOCK_SIZE as usize]; DB_SIZE as usize] =
     [[0; BLOCK_SIZE as usize]; DB_SIZE as usize];
 
 fn main() -> Result<(), OsamPlusError> {
+    let is_encrypted = true;
     let mut rng = OsRng;
     let mut osam_plus = PathOsamPlus::<
         BlockValue<BLOCK_SIZE>,
         DEFAULT_BLOCKS_PER_BUCKET,
         DEFAULT_PATH_COUNT,
-    >::new_with_parameters(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE)?;
+    >::new(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE, is_encrypted)?;
 
     let mut addresses: [(Identifier, TreeIndex); DB_SIZE as usize] =
         [(Identifier::MAX, 0); DB_SIZE as usize];

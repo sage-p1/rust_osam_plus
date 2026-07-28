@@ -7,9 +7,7 @@
 
 //! Block and bucket structures for OSAM+.
 
-use crate::BucketSize;
-use crate::{utils::TreeIndex, Identifier};
-use crate::{BlockSize, OsamPlusBlock};
+use crate::{utils::TreeIndex, BlockSize, BucketSize, Identifier, OsamPlusBlock};
 use rand::{
     distributions::{Distribution, Standard},
     Rng,

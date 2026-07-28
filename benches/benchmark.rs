@@ -10,9 +10,9 @@
 extern crate criterion;
 use core::fmt;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use osam_plus::path_osam_plus::DEFAULT_STASH_OVERFLOW_SIZE;
 use osam_plus::{
-    BlockSize, BlockValue, BucketSize, Identifier, OsamPlus, PathCount, PathOsamPlus, TreeIndex,
+    path_osam_plus::DEFAULT_STASH_OVERFLOW_SIZE, BlockSize, BlockValue, BucketSize, Identifier,
+    OsamPlus, PathCount, PathOsamPlus, TreeIndex,
 };
 use std::mem;
 use std::time::Duration;
@@ -52,6 +52,7 @@ fn benchmark_initialization<const B: BlockSize, const Z: BucketSize, const P: Pa
     c: &mut Criterion,
 ) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::initialization");
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
         group.bench_with_input(
             BenchmarkId::from_parameter(ReadWriteParameters {
@@ -61,9 +62,10 @@ fn benchmark_initialization<const B: BlockSize, const Z: BucketSize, const P: Pa
             capacity,
             |b, capacity| {
                 b.iter(|| {
-                    PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+                    PathOsamPlus::<BlockValue<B>, Z, P>::new(
                         *capacity,
                         DEFAULT_STASH_OVERFLOW_SIZE,
+                        is_encrypted,
                     )
                 })
             },
@@ -74,10 +76,12 @@ fn benchmark_initialization<const B: BlockSize, const Z: BucketSize, const P: Pa
 fn benchmark_alloc<const B: BlockSize, const Z: BucketSize, const P: PathCount>(c: &mut Criterion) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::alloc");
     let mut rng = StdRng::seed_from_u64(0);
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
         group.bench_function(
@@ -95,10 +99,12 @@ fn benchmark_alloc_and_read<const B: BlockSize, const Z: BucketSize, const P: Pa
 ) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::read");
     let mut rng = StdRng::seed_from_u64(0);
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
         group.bench_function(
@@ -120,10 +126,12 @@ fn benchmark_alloc_and_read<const B: BlockSize, const Z: BucketSize, const P: Pa
 fn benchmark_read<const B: BlockSize, const Z: BucketSize, const P: PathCount>(c: &mut Criterion) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::read");
     let mut rng = StdRng::seed_from_u64(0);
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
         group.bench_function(
@@ -146,10 +154,12 @@ fn benchmark_alloc_and_write<const B: BlockSize, const Z: BucketSize, const P: P
 ) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::write");
     let mut rng = StdRng::seed_from_u64(0);
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
         group.bench_function(
@@ -177,10 +187,12 @@ fn benchmark_alloc_and_write<const B: BlockSize, const Z: BucketSize, const P: P
 fn benchmark_write<const B: BlockSize, const Z: BucketSize, const P: PathCount>(c: &mut Criterion) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::write");
     let mut rng = StdRng::seed_from_u64(0);
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
         group.bench_function(
@@ -209,10 +221,12 @@ fn benchmark_alloc_and_local_write<const B: BlockSize, const Z: BucketSize, cons
 ) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::local_write");
     let mut rng = StdRng::seed_from_u64(0);
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
         group.bench_function(
@@ -234,10 +248,12 @@ fn benchmark_local_write<const B: BlockSize, const Z: BucketSize, const P: PathC
     c: &mut Criterion,
 ) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::local_write");
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK.iter() {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             *capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
         group.bench_function(
@@ -255,10 +271,12 @@ fn benchmark_random_operations<const B: BlockSize, const Z: BucketSize, const P:
 ) {
     let mut group = c.benchmark_group(String::from("PathOsamPlus") + "::random_operations");
     let mut rng = StdRng::seed_from_u64(0);
+    let is_encrypted = false;
     for capacity in CAPACITIES_TO_BENCHMARK {
-        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new_with_parameters(
+        let mut osam_plus = PathOsamPlus::<BlockValue<B>, Z, P>::new(
             capacity,
             DEFAULT_STASH_OVERFLOW_SIZE,
+            is_encrypted,
         )
         .unwrap();
 
