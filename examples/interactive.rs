@@ -8,8 +8,8 @@
 //! A simple interactive demonstration of OSAM+.
 
 use osam_plus::{
-    path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE},
-    OsamPlus, PathOsamPlus,
+    OsamPlus, PathOsamPlus, DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT,
+    DEFAULT_STASH_OVERFLOW_SIZE,
 };
 use rand::{rngs::OsRng, Rng};
 use rustyline::{history::FileHistory, Editor};

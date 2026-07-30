@@ -9,8 +9,8 @@
 
 extern crate osam_plus;
 use osam_plus::{
-    path_osam_plus::{DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE},
     BlockSize, BlockValue, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, TreeIndex,
+    DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE,
 };
 use rand::{rngs::OsRng, Rng};
 

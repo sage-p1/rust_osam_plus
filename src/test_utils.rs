@@ -22,7 +22,6 @@ use rand::{
 };
 use simplelog::{Config, WriteLogger};
 
-// use crate::path_osam_plus::PathOsamPlus;
 // For use in manual testing and inspection.
 // Change log_level to "Warn" to see stash overflow events, and to "Debug" to additionally see OSAM+ initialization events.
 pub(crate) fn init_logger() {
@@ -380,7 +379,7 @@ pub(crate) fn interspersed_overwrite_then_read<T: OsamPlus>(
     }
 }
 
-/// Tests the correctness of PathOsamPlus on a sequence of all writes then reads.
+/// Tests the correctness of `PathOsamPlus` on a sequence of all writes then reads.
 pub(crate) fn local_write_then_read<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount>(
     osam_plus: &mut PathOsamPlus<V, Z, P>,
     num_operations: usize,
