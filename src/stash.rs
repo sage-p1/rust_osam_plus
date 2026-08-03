@@ -168,7 +168,8 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
                 // Real blocks that are assigned to the overflow have the assignment `TreeIndex::Max - 1` so
                 // they appear at the start of the stash / end of `reserve_space` before any dummy blocks.
                 // Assign dummy blocks to `TreeIndex::Max - 2` to pad out `reserve_space` so they appear
-                // before any real blocks that were assigned to the overflow.
+                // before any real blocks that were assigned to the overflow. Otherwise, real blocks will
+                // appear too early and be overwritten by future downloads.
                 let open_reserve_space = reserve_to_fill.ct_ne(&0);
                 let reserve_to_fill_decremented = reserve_to_fill.saturating_sub(1);
                 let assign_to_reserve = (!assigned) & open_reserve_space & block_free;

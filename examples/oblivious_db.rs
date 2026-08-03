@@ -5,7 +5,7 @@
 // License, Version 2.0 found in the LICENSE-APACHE file in the root directory
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
-//! An example of using Path OSAM+ to obliviously serve an indexed database.
+//! An example of using OSAM+ to obliviously serve an indexed database.
 
 extern crate osam_plus;
 use osam_plus::{

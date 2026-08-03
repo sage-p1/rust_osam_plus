@@ -38,7 +38,7 @@ OSAM+ supports three operations:
 
 * `Write(addr, val)` writes the given value to its associated address. Addresses can be overwritten several times. The given address must be produced by `Alloc()`.
 
-* `val <- Read(addr)` reads and returns the value associated with the given address. Addresses can only be read once. The given address must be produced by `Alloc()`. Reading an address that was allocated but not written is a valid operation.
+* `val <- Read(addr)` reads and returns the value associated with the given address. Addresses can only be read at most once. The given address must be produced by `Alloc()`. Reading an address that was allocated but not written is a valid operation.
 
 Design Specifications
 ---------------------
@@ -46,8 +46,8 @@ Design Specifications
 ### Addresses
 
 In this implementation of Path OSAM+, addresses consist of a tuple `(identifier, position)`.
-An identifier is uniquely given by an increasing counter distinguish each block.
-A position is a uniformly random leaf bucket a block is assigned to.
+An identifier is uniquely given by an increasing counter to distinguish each block.
+A position is the uniformly random leaf bucket a block is assigned to.
 
 ### Correctness
 
@@ -67,7 +67,7 @@ We support two eviction strategies:
 * [reverse-lexicographic eviction](https://eprint.iacr.org/2013/239.pdf), which deterministically and routinely evicts buckets.
 * random eviction. 
 
-When calling a function that evicts blocks to the server, use the boolean `ordered_evict` toggle between reverse-lexicographic eviction and random eviction.
+When calling a function that evicts blocks to the server, use the boolean `ordered_evict` to toggle between reverse-lexicographic eviction and random eviction.
 
 ### Encryption
 
@@ -100,6 +100,7 @@ There are some miscellaneous functions that:
 * evict one or `P` paths to the server without reading an address.
 * return the number of times a certain operation was done.
 * compute the variance and standard deviation on stash occupancy (number of real blocks in the stash).
+* prints information of blocks in the server or in the stash (encrypted blocks are decrypted, displayed, and re-encrypted).
 
 License
 -------

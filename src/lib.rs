@@ -21,7 +21,7 @@
 //!   The given address must be produced by `Alloc()`.
 //!
 //! * `val <- Read(addr)` reads and returns the value associated with the given address.
-//!   Addresses can only be read once.
+//!   Addresses can only be read at most once.
 //!   The given address must be produced by `Alloc()`.
 //!   Reading an address that was allocated but not written is a valid operation.
 //!
@@ -36,14 +36,15 @@
 //! [Oblix paper](https://people.eecs.berkeley.edu/~raluca/oblix.pdf). See the
 //! [Path ORAM retrospective paper](http://elaineshi.com/docs/pathoram-retro.pdf)
 //! for a high-level introduction to Path ORAM.
+//! Path OSAM+ deterministically evicts paths in a [reverse-lexicographic ordering](https://eprint.iacr.org/2013/239.pdf).
 //!
 //! # Design Specifications
 //!
 //! **Addresses**
 //!
 //! In this implementation of Path OSAM+, addresses consist of a tuple `(identifier, position)`.
-//! An identifier is uniquely given by an increasing counter distinguish each block.
-//! A position is a uniformly random leaf bucket a block is assigned to.
+//! An identifier is uniquely given by an increasing counter to distinguish each block.
+//! A position is the uniformly random leaf bucket a block is assigned to.
 //!
 //! **Correctness**
 //!
@@ -64,7 +65,7 @@
 //!   and routinely evicts buckets.
 //! * random eviction.
 //!
-//! When calling a function that evicts blocks to the server, use the boolean `ordered_evict` toggle between
+//! When calling a function that evicts blocks to the server, use the boolean `ordered_evict` to toggle between
 //! reverse-lexicographic eviction and random eviction.
 //!
 //! **Encryption**
@@ -73,12 +74,13 @@
 //! secure enclave setting and does not perform encryption on-write.
 //! We do not maintain this assumption and allow for toggling between encrypted and plaintext backends for Path OSAM+.
 //! This can be toggled with the boolean `is_encrypted` when initializing a Path OSAM+.
+//! The chosen encryption method is AES-GCM.
 //!
 //! **Local Operations**
 //!
 //! When calling `Write()` or `Read()`, there is one round-trip of interaction between the client and server.
 //! In the SAM+ setting, we expect the client to be performing significantly more writes than reads.
-//! To save on time, we introduce two functions two local functions that do not interact with the server:
+//! To save on time, we introduce two local functions that do not interact with the server:
 //! * `LocalWrite(addr, val)` writes value to its associated address.
 //!   Keeps the resulting block in the stash without evicting to the server.
 //! * `LocalBatchWrite([(addr, val)])` writes a series of values to their associated addresses.
@@ -100,8 +102,42 @@
 //! * evict one or `P` paths to the server without reading an address.
 //! * return the number of times a certain operation was done.
 //! * compute the variance and standard deviation on stash occupancy (number of real blocks in the stash).
+//! * prints information of blocks in the server or in the stash (encrypted blocks are decrypted, displayed, and re-encrypted).
 //!
-//! # Example
+//! # Example 1
+//!
+//! This example initialized an OSAM+ using Path OSAM+.
+//!
+//! An OSAM+ can store arbitrary structs implementing `OsamPlusBlock`.
+//! We provide implementations of `OsamPlusBlock` for `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`,
+//! and `BlockValue<const B: BlockSize>`.
+//!
+//! ```
+//! use osam_plus::{
+//!     DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE,
+//!     BlockSize, BlockValue, BucketSize, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, StashSize,
+//! };
+//! use rand::{rngs::OsRng, Rng};
+//!
+//! // Declare constants.
+//! const BLOCK_SIZE: BlockSize = 64;
+//! const DB_SIZE: Identifier = 64;
+//! const BUCKET_SIZE: BucketSize = DEFAULT_BLOCKS_PER_BUCKET;
+//! const INITIAL_STASH_OVERFLOW_SIZE: StashSize = DEFAULT_STASH_OVERFLOW_SIZE;
+//!
+//! // Initialize other relevant parameters.
+//! let mut rng = OsRng;
+//! let is_encrypted = rng.gen_bool(0.5);
+//!
+//! let mut osam_plus = PathOsamPlus::<
+//!     BlockValue<BLOCK_SIZE>,
+//!     DEFAULT_BLOCKS_PER_BUCKET,
+//!     DEFAULT_PATH_COUNT,
+//!     >::new(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE, is_encrypted)?;
+//! # Ok::<(), OsamPlusError>(())
+//! ```
+//!
+//! # Example 2
 //!
 //! The below example reads a database from memory into a Path OSAM+, thus permitting secret-dependent accesses.
 //!
@@ -154,42 +190,6 @@
 //! # Ok::<(), OsamPlusError>(())
 //! ```
 //!
-//! # Advanced
-//!
-//! Path OSAM+ can store arbitrary structs implementing `OsamPlusBlock`.
-//! We provide implementations of `OsamPlusBlock` for `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`,
-//! and `BlockValue<const B: BlockSize>`.
-//!
-//! The `DefaultOsam` used in the above example should have good performance in most use cases.
-//! But the underlying algorithms have several tunable parameters that impact performance.
-//! The following example instantiates the same Path OSAM+ struct as above, but using the `PathOsamPlus`
-//! interface which exposes these parameters.
-//!
-//! ```
-//! use osam_plus::{
-//!     DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE,
-//!     BlockSize, BlockValue, BucketSize, Identifier, OsamPlus, OsamPlusError, PathOsamPlus, StashSize,
-//! };
-//! use rand::{rngs::OsRng, Rng};
-//!
-//! // Declare constants.
-//! const BLOCK_SIZE: BlockSize = 64;
-//! const DB_SIZE: Identifier = 64;
-//! const BUCKET_SIZE: BucketSize = DEFAULT_BLOCKS_PER_BUCKET;
-//! const INITIAL_STASH_OVERFLOW_SIZE: StashSize = DEFAULT_STASH_OVERFLOW_SIZE;
-//!
-//! // Initialize other relevant parameters.
-//! let mut rng = OsRng;
-//! let is_encrypted = rng.gen_bool(0.5);
-//!
-//! let mut osam_plus = PathOsamPlus::<
-//!     BlockValue<BLOCK_SIZE>,
-//!     DEFAULT_BLOCKS_PER_BUCKET,
-//!     DEFAULT_PATH_COUNT,
-//!     >::new(DB_SIZE, DEFAULT_STASH_OVERFLOW_SIZE, is_encrypted)?;
-//! # Ok::<(), OsamPlusError>(())
-//! ```
-//!
 //! See [`PathOsamPlus`] for an explanation of these parameters and their possible settings.
 
 #![warn(clippy::cargo, clippy::doc_markdown, missing_docs, rustdoc::all)]
@@ -209,8 +209,10 @@ mod test_utils;
 pub(crate) mod utils;
 
 pub use crate::{
-    bucket::BlockValue, path_osam_plus::PathOsamPlus, path_osam_plus::DEFAULT_BLOCKS_PER_BUCKET,
-    path_osam_plus::DEFAULT_PATH_COUNT, path_osam_plus::DEFAULT_STASH_OVERFLOW_SIZE,
+    bucket::BlockValue,
+    path_osam_plus::{
+        PathOsamPlus, DEFAULT_BLOCKS_PER_BUCKET, DEFAULT_PATH_COUNT, DEFAULT_STASH_OVERFLOW_SIZE,
+    },
     utils::TreeIndex,
 };
 
@@ -227,7 +229,7 @@ pub type StashSize = u64;
 /// Numeric type used to represent the evict counter in Path OSAM+.
 pub type CounterSize = u64;
 
-/// A "trait alias" for OSAM+ blocks: the values read and written by Path OSAM+s.
+/// A "trait alias" for OSAM+ blocks: the values read and written by an OSAM+.
 pub trait OsamPlusBlock:
     Copy + Clone + std::fmt::Debug + Default + PartialEq + ConditionallySelectable + LowLevelBytes
 {

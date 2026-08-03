@@ -198,7 +198,7 @@ impl<const B: BlockSize> Distribution<BlockValue<B>> for Standard {
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
-/// An OSAM+ block combines an `OsamPlusBlock` V with two metadata fields; its OSAM+ `identifier` and its `position` in the tree.
+/// A Path OSAM+ block combines an `OsamPlusBlock` V with two metadata fields; its OSAM+ `identifier` and its `position` in the tree.
 pub(crate) struct PathOsamPlusBlock<V> {
     pub value: V,
     pub identifier: Identifier,
@@ -294,9 +294,9 @@ impl<V: OsamPlusBlock> LowLevelBytes for PathOsamPlusBlock<V> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-/// A OSAM+ bucket.
+/// A Path OSAM+ bucket.
 pub struct Bucket<V: OsamPlusBlock, const Z: BucketSize> {
-    /// The OSAM+ blocks stored by this bucket.
+    /// The Path OSAM+ blocks stored by this bucket.
     pub(crate) blocks: [PathOsamPlusBlock<V>; Z],
 }
 

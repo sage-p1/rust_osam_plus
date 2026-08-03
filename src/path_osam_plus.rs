@@ -25,7 +25,7 @@ pub const DEFAULT_BLOCKS_PER_BUCKET: BucketSize = 4;
 /// The default number of paths that Path OSAM+ can evict simultaneously.
 pub const DEFAULT_PATH_COUNT: PathCount = 1;
 
-/// The default number of overflow blocks that the Path OSAM+ stash (and recursive stashes) can store.
+/// The default number of overflow blocks that the Path OSAM+ stash can store.
 pub const DEFAULT_STASH_OVERFLOW_SIZE: StashSize = 40;
 
 /// A doubly oblivious Path OSAM+.
