@@ -78,8 +78,8 @@ pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize, const P: PathCoun
     /// The counter that assigns identifiers to Path OSAM+ blocks.
     /// Also serves as the alloc counter.
     identifier_counter: Identifier,
-    /// The counter that deterministically picks which path to evict.
-    evict_counter: CounterSize,
+    /// The counter that deterministically picks which root-to-leaf path to evict.
+    position_counter: CounterSize,
     /// The maximum occupancy (number of real blocks) observed in the stash at once.
     max_occupancy: StashSize,
     /// A mapping of occupancies to the number of occurrences.
@@ -88,11 +88,18 @@ pub struct PathOsamPlus<V: OsamPlusBlock, const Z: BucketSize, const P: PathCoun
     write_counter: CounterSize,
     /// The counter tracking the number of writes made without eviction.
     local_write_counter: CounterSize,
+    /// The counter tracking the number of batch writes made without eviction.
+    local_write_batch_counter: CounterSize,
     /// The counter tracking the number of reads.
     read_counter: CounterSize,
+    /// The counter tracking the number of reads with multi-path eviction.
+    read_multi_paths_counter: CounterSize,
+    /// The counter tracking the number of evicts.
+    evict_counter: CounterSize,
+    /// The counter tracking the number of multi-path evictions.
+    evict_multi_paths_counter: CounterSize,
     /// The counter tracking the number of round-trips, which is a defined as one
-    /// instance of reading a path and then writing a path. This should equal
-    /// `write_counter` + `read_counter`.
+    /// instance of reading a path and then writing a path.
     round_trip_counter: CounterSize,
 }
 
@@ -156,12 +163,16 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Initialize other parameters.
         let identifier_counter: Identifier = 1;
-        let evict_counter: CounterSize = 0;
+        let position_counter: CounterSize = 0;
         let max_occupancy: StashSize = 0;
         let all_occupancies: HashMap<StashSize, StashSize> = HashMap::new();
         let write_counter: CounterSize = 0;
         let local_write_counter: CounterSize = 0;
+        let local_write_batch_counter: CounterSize = 0;
         let read_counter: CounterSize = 0;
+        let read_multi_paths_counter: CounterSize = 0;
+        let evict_counter: CounterSize = 0;
+        let evict_multi_paths_counter: CounterSize = 0;
         let round_trip_counter: CounterSize = 0;
 
         Ok(Self {
@@ -169,12 +180,16 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
             stash,
             height,
             identifier_counter,
-            evict_counter,
+            position_counter,
             max_occupancy,
             all_occupancies,
             write_counter,
             local_write_counter,
+            local_write_batch_counter,
             read_counter,
+            read_multi_paths_counter,
+            evict_counter,
+            evict_multi_paths_counter,
             round_trip_counter,
         })
     }
@@ -232,7 +247,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
-        self.read_counter += 1;
+        self.read_multi_paths_counter += 1;
         self.round_trip_counter += 1;
 
         Ok(result)
@@ -281,7 +296,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
-        self.local_write_counter += 1;
+        self.local_write_batch_counter += 1;
 
         Ok(())
     }
@@ -317,7 +332,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
-        self.read_counter += 1;
+        self.evict_counter += 1;
         self.round_trip_counter += 1;
 
         Ok(())
@@ -359,7 +374,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
         // Bookkeeping of OSAM+ stats.
         self.update_stash_stats();
-        self.read_counter += 1;
+        self.evict_multi_paths_counter += 1;
         self.round_trip_counter += 1;
 
         Ok(())
@@ -367,7 +382,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
 
     /// Calculates the next position to evict via reverse-lexicographic ordering.
     fn evict_position(&mut self) -> Result<TreeIndex, OsamPlusError> {
-        let mut evict_position: TreeIndex = self.evict_counter;
+        let mut evict_position: TreeIndex = self.position_counter;
         let height: u32 = self.height.try_into()?;
         let number_of_leaves = 2u64.pow(height);
 
@@ -456,9 +471,29 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         self.local_write_counter
     }
 
+    /// Outputs the number of local batch writes without eviction.
+    pub fn local_write_batch_counter(&self) -> CounterSize {
+        self.local_write_batch_counter
+    }
+
     /// Outputs the number of reads.
     pub fn read_counter(&self) -> CounterSize {
         self.read_counter
+    }
+
+    /// Outputs the number of reads with multi-path eviction.
+    pub fn read_multi_paths_counter(&self) -> CounterSize {
+        self.read_multi_paths_counter
+    }
+
+    /// Outputs the number of evicts.
+    pub fn evict_counter(&self) -> CounterSize {
+        self.evict_counter
+    }
+
+    /// Outputs the number of multi-path evictions.
+    pub fn evict_multi_paths_counter(&self) -> CounterSize {
+        self.evict_multi_paths_counter
     }
 
     /// Outputs the number of round trips.
