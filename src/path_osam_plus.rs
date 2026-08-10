@@ -393,7 +393,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         evict_position = evict_position.checked_shr(64 - height).unwrap_or(0);
         evict_position += number_of_leaves;
 
-        self.evict_counter += 1;
+        self.position_counter += 1;
         assert!(evict_position.is_leaf(self.height));
         Ok(evict_position)
     }
