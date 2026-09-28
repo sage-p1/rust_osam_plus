@@ -1,0 +1,6 @@
+# Directed graph accepted by oblivious_graph_bench.
+0 1 4
+0 2 7
+1 2 3
+2 0 5
+v 3
