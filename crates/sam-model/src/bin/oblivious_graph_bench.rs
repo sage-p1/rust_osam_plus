@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! config impl=native mode=dry-run pointer=multiwriterary cache=false move=true block_size=4096 ... build=static prime=false dynamic_ops=0
-//! build allocations=.. reads=.. writes=.. nanos=.. install_nanos=.. installation_maximum_stash=..
+//! build allocations=.. reads=.. writes=.. flushes=.. nanos=.. install_nanos=.. installation_maximum_stash=..
 //! prime walks=.. allocations=.. reads=.. writes=.. nanos=..            (with --prime)
 //! dynamic ops=.. add_vertex=.. add_edge=.. delete_edge=.. delete_vertex=.. allocations=.. reads=.. writes=.. nanos=.. tombstones=..   (with --dynamic-ops N)
 //! trial alg=bfs index=0 start=.. attempts=.. allocations=.. reads=.. writes=.. roundtrips=.. nanos=.. size=.. cost=none stash_peak=none
@@ -29,7 +29,9 @@
 //! the per-algorithm `structure` records; their total is reported as
 //! `rejected_*`. `mean_*` / `var_*` are per-run moments; per-step costs are
 //! them divided by `length`.
-//! Round trips are reads + writes, as in the Python parser.
+//! Round trips are reads + writes, as in the Python parser (the launcher's
+//! report charges the r-ary pointer reads only; reads and writes are always
+//! reported separately).
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use sam_model::{
@@ -105,6 +107,9 @@ struct Config {
 #[derive(Debug)]
 struct BuildInfo {
     operations: OperationCounts,
+    /// Public write-burst flushes during construction (r-ary only; each is
+    /// also counted as one read).
+    flushes: u64,
     structures: BTreeMap<&'static str, StructureStats>,
     nanos: u128,
     install_nanos: Option<u128>,
@@ -572,6 +577,7 @@ where
     };
     let mut build = BuildInfo {
         operations: sam.stats().operations,
+        flushes: sam.stats().flushes,
         structures: sam.stats().by_structure.clone(),
         nanos: clock.elapsed().as_nanos(),
         install_nanos: None,
@@ -870,11 +876,12 @@ where
     )?;
     writeln!(
         out,
-        "build allocations={} reads={} writes={} nanos={} install_nanos={} \
+        "build allocations={} reads={} writes={} flushes={} nanos={} install_nanos={} \
          installation_maximum_stash={}",
         build.operations.allocations,
         build.operations.reads,
         build.operations.writes,
+        build.flushes,
         build.nanos,
         opt(build.install_nanos),
         opt(build.installation_maximum_stash),

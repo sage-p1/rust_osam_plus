@@ -564,6 +564,10 @@ impl<V: Clone> CacheablePointerBackend<V> for MultiWritePointers {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RaryPointers {
     branching_factor: usize,
+    /// `New` calls since the last public flush: BlockOSAM flushes after
+    /// every `branching_factor` of them (each writes one root and reads
+    /// nothing).
+    new_calls: usize,
 }
 
 impl RaryPointers {
@@ -574,7 +578,10 @@ impl RaryPointers {
                 "branching factor must be an even integer of at least two",
             ));
         }
-        Ok(Self { branching_factor })
+        Ok(Self {
+            branching_factor,
+            new_calls: 0,
+        })
     }
 
     /// Returns the configured fanout.
@@ -596,7 +603,13 @@ impl<V: Clone> SmartPointerBackend<V> for RaryPointers {
         sam: &mut S,
         value: V,
     ) -> Result<Self::Pointer, SamError> {
-        RaryPointer::new(sam, value, self.branching_factor)
+        let pointer = RaryPointer::new(sam, value, self.branching_factor)?;
+        self.new_calls += 1;
+        if self.new_calls == self.branching_factor {
+            self.new_calls = 0;
+            sam.flush(self.branching_factor, "SmartPointerMultiWriteRary")?;
+        }
+        Ok(pointer)
     }
 
     fn copy_pointer<S: SingleAccessMachine<Self::Cell>>(

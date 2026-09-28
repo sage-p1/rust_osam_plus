@@ -97,6 +97,13 @@ impl<V: Clone> DryRunSam<V> {
     fn structure_stats_mut(&mut self, structure: &'static str) -> &mut crate::StructureStats {
         self.stats.by_structure.entry(structure).or_default()
     }
+
+    /// Starts a new pending-write window: `write_batches` and its high-water
+    /// mark restart at zero.
+    pub fn reset_write_batches(&mut self) {
+        self.stats.write_batches = 0;
+        self.stats.max_write_batches = 0;
+    }
 }
 
 impl<V: Clone> SingleAccessMachine<V> for DryRunSam<V> {
@@ -212,6 +219,14 @@ impl<V: Clone> SingleAccessMachine<V> for DryRunSam<V> {
             }
             Address::Oblivious(_) => {}
         }
+    }
+
+    fn flush(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+        self.stats.flushes += 1;
+        self.stats.operations.reads += 1;
+        self.structure_stats_mut(structure).reads += 1;
+        self.stats.write_batches = self.stats.write_batches.saturating_sub(paths as u64);
+        Ok(())
     }
 
     fn stats(&self) -> &Stats {

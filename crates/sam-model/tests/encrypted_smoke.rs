@@ -47,6 +47,33 @@ fn dry_run_build_can_move_to_encrypted_osam() {
     assert!(encrypted.backend_max_stash_occupancy() >= stash.maximum);
 }
 
+#[test]
+fn rary_bulk_copy_flushes_on_encrypted_osam() {
+    // A bulk copy on the encrypted SAM: its writes stay in the stash until the
+    // public flushes (one per b writes) evict them, and every alias reads back.
+    use sam_model::pointer::{RaryCell, RaryPointer};
+    let dry = DryRunSam::<RaryCell<u64>>::new(AccessPolicy::MULTI_WRITE);
+    let mut sam = PathOsamSam::<RaryCell<u64>, _, 64, 4, 1>::from_snapshot(
+        dry.snapshot(),
+        1024,
+        60,
+        true,
+        AccessPolicy::MULTI_WRITE,
+        AccessStrategy::MULTI_WRITE_RARY,
+        true,
+        11,
+        FixedSizeCodec::new(RaryCellValueCodec::new(sam_model::pointer::U64ValueCodec)),
+    )
+    .unwrap();
+    let mut pointer = RaryPointer::new(&mut sam, 99_u64, 4).unwrap();
+    let mut copies = pointer.copy_many(&mut sam, 40).unwrap();
+    assert!(sam.stats().flushes > 0);
+    copies.push(pointer);
+    for copy in &mut copies {
+        assert_eq!(copy.get(&mut sam).unwrap(), 99);
+    }
+}
+
 /// Builds a small graph on the dry-run SAM, installs it into Path OSAM+,
 /// then runs dynamic operations and every algorithm encrypted.
 fn encrypted_graph<P, B, C, const BLOCK: usize>(kind: PointerKind, mut backend: B, codec: C)

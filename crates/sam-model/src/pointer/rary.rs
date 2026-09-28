@@ -25,6 +25,80 @@ pub enum RaryCell<V> {
     },
 }
 
+/// BlockOSAM's bounded writer: counts the pointer-cell writes of a burst
+/// without genuine reads (a bulk copy, or a run of `New` calls) and performs
+/// a public flush of `batch` evictions after every `batch` of them, so the
+/// pending writes stay bounded. [`Self::finish`] flushes a final partial batch.
+pub(crate) struct BoundedWrites<'a, S> {
+    sam: &'a mut S,
+    batch: usize,
+    pending: usize,
+}
+
+impl<'a, S> BoundedWrites<'a, S> {
+    pub(crate) fn new(sam: &'a mut S, batch: usize) -> Self {
+        Self {
+            sam,
+            batch,
+            pending: 0,
+        }
+    }
+
+    /// Flushes the writes of a final partial batch.
+    pub(crate) fn finish<V: Clone>(self) -> Result<(), SamError>
+    where
+        S: SingleAccessMachine<V>,
+    {
+        if self.pending > 0 {
+            self.sam.flush(self.batch, STRUCTURE)?;
+        }
+        Ok(())
+    }
+}
+
+impl<V: Clone, S: SingleAccessMachine<V>> SingleAccessMachine<V> for BoundedWrites<'_, S> {
+    fn alloc(&mut self, class: MemoryClass, structure: &'static str) -> Address {
+        self.sam.alloc(class, structure)
+    }
+
+    fn write(
+        &mut self,
+        address: Address,
+        value: V,
+        structure: &'static str,
+    ) -> Result<(), SamError> {
+        self.sam.write(address, value, structure)?;
+        if matches!(address, Address::Oblivious(_)) {
+            self.pending += 1;
+            if self.pending == self.batch {
+                self.pending = 0;
+                self.sam.flush(self.batch, STRUCTURE)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, address: Address, structure: &'static str) -> Result<Option<V>, SamError> {
+        self.sam.read(address, structure)
+    }
+
+    fn retire(&mut self, address: Address) {
+        self.sam.retire(address)
+    }
+
+    fn flush(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+        self.sam.flush(paths, structure)
+    }
+
+    fn stats(&self) -> &crate::Stats {
+        self.sam.stats()
+    }
+
+    fn reset_stash_maximum(&mut self) {
+        self.sam.reset_stash_maximum()
+    }
+}
+
 /// Multi-write pointer whose physical tree has configurable even fanout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RaryPointer {
@@ -248,13 +322,25 @@ impl RaryPointer {
             return Err(SamError::InvalidParameter("num_copies must be positive"));
         }
         let mut leaves = Vec::with_capacity(num_copies + 1);
-        Self::build_subtree(
-            sam,
-            head,
-            num_copies + 1,
-            self.branching_factor,
-            &mut leaves,
-        )?;
+        if num_copies > 1 {
+            let mut bounded = BoundedWrites::new(sam, self.branching_factor);
+            Self::build_subtree(
+                &mut bounded,
+                head,
+                num_copies + 1,
+                self.branching_factor,
+                &mut leaves,
+            )?;
+            bounded.finish()?;
+        } else {
+            Self::build_subtree(
+                sam,
+                head,
+                num_copies + 1,
+                self.branching_factor,
+                &mut leaves,
+            )?;
+        }
         self.head = Some(leaves[0]);
         self.last_depth = 0;
         Ok(leaves[1..]
@@ -267,8 +353,25 @@ impl RaryPointer {
             .collect())
     }
 
-    /// Creates many aliases after reading the old head only once.
+    /// Creates many aliases after reading the old head only once. A bulk copy
+    /// (more than one alias) is a write burst without reads, so its writes go
+    /// through the bounded writer ([`BoundedWrites`]); a single copy is
+    /// already bounded by the reads of the copied path.
     pub fn copy_many<V: Clone, S: SingleAccessMachine<RaryCell<V>>>(
+        &mut self,
+        sam: &mut S,
+        num_copies: usize,
+    ) -> Result<Vec<Self>, SamError> {
+        if num_copies <= 1 {
+            return self.copy_many_unbounded(sam, num_copies);
+        }
+        let mut bounded = BoundedWrites::new(sam, self.branching_factor);
+        let copies = self.copy_many_unbounded(&mut bounded, num_copies)?;
+        bounded.finish()?;
+        Ok(copies)
+    }
+
+    fn copy_many_unbounded<V: Clone, S: SingleAccessMachine<RaryCell<V>>>(
         &mut self,
         sam: &mut S,
         num_copies: usize,
@@ -363,10 +466,12 @@ impl RaryPointer {
         if count == 1 {
             return Ok(vec![Self::new(sam, value, branching_factor)?]);
         }
-        let root = sam.alloc(MemoryClass::Oblivious, STRUCTURE);
-        sam.write(root, RaryCell::Root(value), STRUCTURE)?;
+        let mut bounded = BoundedWrites::new(sam, branching_factor);
+        let root = bounded.alloc(MemoryClass::Oblivious, STRUCTURE);
+        bounded.write(root, RaryCell::Root(value), STRUCTURE)?;
         let mut leaves = Vec::with_capacity(count);
-        Self::build_subtree(sam, root, count, branching_factor, &mut leaves)?;
+        Self::build_subtree(&mut bounded, root, count, branching_factor, &mut leaves)?;
+        bounded.finish()?;
         Ok(leaves
             .into_iter()
             .map(|head| Self {
@@ -903,14 +1008,45 @@ mod tests {
     }
 
     #[test]
-    fn bulk_copy_reads_the_old_head_once() {
+    fn bulk_copy_reads_the_old_head_once_and_flushes_every_b_writes() {
         let mut sam = sam();
         let mut pointer = RaryPointer::new(&mut sam, "cat", 4).unwrap();
-        let before = sam.stats().operations;
+        let before = sam.stats().clone();
         let copies = pointer.copy_many(&mut sam, 100).unwrap();
-        let after = sam.stats().operations;
+        let after = sam.stats().clone();
         assert_eq!(copies.len(), 100);
-        assert_eq!(after.reads - before.reads, 1);
+        let writes = after.operations.writes - before.operations.writes;
+        let flushes = after.flushes - before.flushes;
+        // One genuine read (the old head), then one public flush per full
+        // batch of 4 writes and one for the final partial batch.
+        assert_eq!(flushes, writes.div_ceil(4));
+        assert_eq!(
+            after.operations.reads - before.operations.reads,
+            1 + flushes
+        );
+        // A single copy is bounded by its own reads: no flush.
+        let mut single = RaryPointer::new(&mut sam, "dog", 4).unwrap();
+        let before = sam.stats().flushes;
+        single.copy(&mut sam).unwrap();
+        assert_eq!(sam.stats().flushes, before);
+    }
+
+    #[test]
+    fn bulk_copy_keeps_pending_writes_below_one_batch() {
+        // Pending writes (writes not yet offset by a read or a flush) never
+        // reach b + 1 during a bulk copy, whatever its size.
+        for branching_factor in [2, 6, 64] {
+            let mut sam = sam();
+            let mut pointer = RaryPointer::new(&mut sam, 7_u64, branching_factor).unwrap();
+            pointer.copy(&mut sam).unwrap();
+            sam.reset_write_batches();
+            pointer.copy_many(&mut sam, 1000).unwrap();
+            assert!(
+                sam.stats().max_write_batches <= branching_factor as u64,
+                "b={branching_factor}: {} pending writes",
+                sam.stats().max_write_batches
+            );
+        }
     }
 
     #[test]

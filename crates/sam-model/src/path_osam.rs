@@ -414,6 +414,21 @@ impl<V: Clone, C: BlockCodec<V, B>, const B: usize, const Z: BucketSize, const P
         // Path OSAM+ addresses are single-read and are already consumed by read.
     }
 
+    fn flush(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+        // `evict_multi_paths` evicts P paths; round up to `paths`.
+        for _ in 0..paths.div_ceil(P).max(1) {
+            self.osam
+                .evict_multi_paths(self.ordered_evict, &mut self.rng)
+                .map_err(|error| SamError::Backend(error.to_string()))?;
+        }
+        self.stats.flushes += 1;
+        self.stats.operations.reads += 1;
+        self.structure_stats_mut(structure).reads += 1;
+        self.stats.write_batches = self.stats.write_batches.saturating_sub(paths as u64);
+        self.observe_stash();
+        Ok(())
+    }
+
     fn stats(&self) -> &Stats {
         &self.stats
     }

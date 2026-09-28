@@ -20,10 +20,13 @@ Differences from the Python launcher:
   ``WALK_LENGTH`` moves for rw and pr, two neighbor-list retrievals for cd,
   and one for dtc, which has no natural step). So the fixed costs of a run
   (the start lookup, final deletions) are amortized over the same number of
-  steps in every trial. Each algorithm gets at most 1000 runs: ``status`` is
+  steps in every trial. Round trips are reads + writes, except for the r-ary
+  pointer (BOSAM), which is charged reads only, as in
+  ``parse_er_graphs_bosam.py`` (its writes are buffered and evicted in
+  public batches); the ``charge`` column says which, and reads and writes
+  are always reported separately. Each algorithm gets at most 1000 runs: ``status`` is
   ``ok`` when all trials were found, ``short`` when fewer were, and
-  ``failed`` when no run was full length (no costs are reported then). Round
-  trips are reads + writes, as in ``parse_er_tests.py``.
+  ``failed`` when no run was full length (no costs are reported then).
 * Recursive-pointer jobs also report the Path ORAM baseline the Python
   parser plots: the round trips of the ORAM's structures (RecursivePointer
   and SmartQueue, as parse_er_tests.py) scaled by the position-map recursion
@@ -186,7 +189,7 @@ class DatasetRef:
     @classmethod
     def of(cls, dataset: Any, root: Path | None = None) -> "DatasetRef":
         return cls(dataset.name, dataset.filename, dataset.directed, dataset.edges,
-                   DATASET_ROOT if root is None else Path(root))
+                   DATASET_ROOT if root is None else Path(root).expanduser())
 
     @property
     def path(self) -> Path:
@@ -768,8 +771,11 @@ def report_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
             "attempts": summary["attempts"],
             "length": length,
         }
+        row["charge"] = charge(config.get("pointer"))
         for metric in ("allocations", "reads", "writes", "roundtrips"):
-            mean, sd = summary.get(f"mean_{metric}"), _sd(summary.get(f"var_{metric}"))
+            # Round trips follow the charging convention (see `charge`).
+            source = "reads" if metric == "roundtrips" and row["charge"] == "reads" else metric
+            mean, sd = summary.get(f"mean_{source}"), _sd(summary.get(f"var_{source}"))
             row[f"mean_{metric}_per_trial"] = mean
             row[f"sd_{metric}_per_trial"] = sd
             row[f"mean_{metric}_per_step"] = mean / length if mean is not None else None
@@ -799,9 +805,11 @@ def report_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
 def structure_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
     config = parsed["config"]
     trials = {algorithm: len(records) for algorithm, records in parsed["trials"].items()}
+    reads_only = charge(config.get("pointer")) == "reads"
     rows = []
     for record in parsed["structures"]:
         count = trials.get(record["phase"])
+        roundtrips = record["reads"] if reads_only else record["roundtrips"]
         rows.append(
             {
                 "n": config.get("vertices"),
@@ -815,9 +823,9 @@ def structure_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
                 "allocations": record["allocations"],
                 "reads": record["reads"],
                 "writes": record["writes"],
-                "roundtrips": record["roundtrips"],
+                "roundtrips": roundtrips,
                 "trials": count,
-                "roundtrips_per_trial": record["roundtrips"] / count if count else None,
+                "roundtrips_per_trial": roundtrips / count if count else None,
                 "log": log.name,
             }
         )
@@ -826,7 +834,7 @@ def structure_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
 
 FIELDS = [
     "n", "edges", "bs", "pointer", "cache", "move", "mode", "pointer_bf", "graph_bf", "layout", "alg",
-    "status", "trials", "requested_trials", "attempts", "length",
+    "status", "trials", "requested_trials", "attempts", "length", "charge",
     "mean_allocations_per_trial", "sd_allocations_per_trial",
     "mean_reads_per_trial", "sd_reads_per_trial",
     "mean_writes_per_trial", "sd_writes_per_trial",
@@ -835,7 +843,7 @@ FIELDS = [
     "mean_reads_per_step", "sd_reads_per_step",
     "mean_writes_per_step", "sd_writes_per_step",
     "mean_roundtrips_per_step", "sd_roundtrips_per_step",
-    "rejected_roundtrips",
+    "rejected_roundtrips",  # reads + writes, whatever the charge
     "oram_levels", "oram_roundtrips_per_trial", "oram_sd_roundtrips_per_trial",
     "oram_roundtrips_per_step", "oram_sd_roundtrips_per_step",
     "mean_ms_per_trial", "max_stash_peak",
@@ -845,6 +853,18 @@ STRUCTURE_FIELDS = [
     "n", "bs", "pointer", "cache", "mode", "layout", "phase", "structure",
     "allocations", "reads", "writes", "roundtrips", "trials", "roundtrips_per_trial", "log",
 ]
+
+
+def charge(pointer: str | None) -> str:
+    """What a job's round trips count, as in ``parse_er_graphs_bosam.py``.
+
+    The r-ary pointer (BOSAM) is charged reads only: a read is what costs it a
+    network round trip, while its writes are buffered and evicted in public
+    batches. Every other pointer (OSAM, OSAM+, ORAM) pays a round trip for
+    reads and writes alike. The ``reads`` and ``writes`` columns are always
+    reported separately.
+    """
+    return "reads" if pointer == "multiwriterary" else "reads+writes"
 
 
 def is_current_log(path: Path) -> bool:
@@ -934,7 +954,8 @@ def print_report(rows: list[dict[str, Any]], limit: int | None = None) -> None:
     print(
         "\nFull-length runs only ('tries': start draws for all trials, at most 1000; FAILED: "
         "no full-length run, !: fewer full-length runs than requested); per-step costs are per-run costs / "
-        "run length. Round trips = reads + writes."
+        "run length. Round trips = reads + writes, except reads only for multiwriterary "
+        "(BOSAM: its writes are buffered and evicted in batches)."
     )
     if any(row.get("layout") == "python-sized" for row in rows):
         print(
@@ -1025,6 +1046,12 @@ def main() -> int:
         datasets = None if args.datasets is None else select_datasets(args.datasets, args.dataset_root)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    missing = [dataset.path for dataset in datasets or () if not dataset.path.is_file()]
+    if missing and not args.report_only:
+        print("Missing dataset edge-list files (check --dataset-root):", file=sys.stderr)
+        for path in missing:
+            print(f"  {path}", file=sys.stderr)
         return 1
     log_dir = log_directory_for(datasets is not None)
     summary_csv = log_dir / SUMMARY_CSV.name

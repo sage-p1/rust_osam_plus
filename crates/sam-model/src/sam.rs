@@ -158,6 +158,9 @@ pub struct Stats {
     pub write_batches: u64,
     /// High-water mark of `write_batches`.
     pub max_write_batches: u64,
+    /// Public write-burst flushes (see [`SingleAccessMachine::flush`]). Each
+    /// is also counted as one read, since it costs one round trip.
+    pub flushes: u64,
     /// Counts grouped by caller-provided structure label.
     pub by_structure: BTreeMap<&'static str, StructureStats>,
     /// Real stash occupancy, present only for a cryptographic backend.
@@ -218,6 +221,15 @@ pub trait SingleAccessMachine<V: Clone> {
 
     /// Makes an address available for reuse when the policy permits it.
     fn retire(&mut self, address: Address);
+
+    /// A public flush: `paths` address-independent evictions that read no
+    /// requested address, sent together as one request. The r-ary pointer
+    /// issues one after every `paths` pointer-cell writes of a burst without
+    /// reads (graph construction), as BlockOSAM's bounded writer does, so its
+    /// pending writes stay bounded. It costs one round trip and is counted as
+    /// one read of `structure` (and in `Stats::flushes`); it offsets `paths`
+    /// pending writes.
+    fn flush(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError>;
 
     /// Returns current operation statistics.
     fn stats(&self) -> &Stats;

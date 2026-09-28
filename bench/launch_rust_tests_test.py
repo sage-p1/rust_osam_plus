@@ -46,7 +46,7 @@ class RustLauncherTest(unittest.TestCase):
     def test_report_is_per_full_length_run_and_amortized_per_step(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "job.log"
-            log.write_text("\n".join(log_lines()) + "\n")
+            log.write_text("\n".join(log_lines(pointer="multiwrite")) + "\n")
             rows = rust.report_rows(rust.parse_log(log), log)
         (row,) = rows
         self.assertEqual((row["alg"], row["trials"], row["attempts"], row["length"]), ("bfs", 2, 3, 4))
@@ -89,6 +89,23 @@ class RustLauncherTest(unittest.TestCase):
             self.assertTrue(rust.is_current_log(root / "new.log"))
             rows = rust.write_report(root, root / "summary.csv")
         self.assertEqual({row["log"] for row in rows}, {"new.log"})
+
+    def test_rary_is_charged_reads_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "job.log"
+            log.write_text("\n".join(log_lines(pointer="multiwriterary")) + "\n")
+            (rary,) = rust.report_rows(rust.parse_log(log), log)
+            rary_structures = rust.structure_rows(rust.parse_log(log), log)
+            log.write_text("\n".join(log_lines(pointer="multiwrite")) + "\n")
+            (multiwrite,) = rust.report_rows(rust.parse_log(log), log)
+        self.assertEqual((rary["charge"], multiwrite["charge"]), ("reads", "reads+writes"))
+        # Mean reads 11 per run over 4 steps; reads + writes would be 22.
+        self.assertEqual(rary["mean_roundtrips_per_trial"], 11.0)
+        self.assertEqual(rary["mean_roundtrips_per_step"], 2.75)
+        self.assertAlmostEqual(rary["sd_roundtrips_per_trial"], 2.0 ** 0.5)
+        self.assertEqual(multiwrite["mean_roundtrips_per_trial"], 22.0)
+        bfs = [record for record in rary_structures if record["phase"] == "bfs"]
+        self.assertEqual(bfs[0]["roundtrips"], 22)  # the fixture's 22 reads
 
     def test_old_per_step_logs_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -157,6 +174,11 @@ class GraphOptionsTest(unittest.TestCase):
         self.assertEqual((args.static, args.prime, args.dynamic_ops, args.move), (True, False, 0, None))
         args = rust.parse_arguments(["--no-static", "--prime", "--dynamic-ops", "7", "--no-move"])
         self.assertEqual((args.static, args.prime, args.dynamic_ops, args.move), (False, True, 7, False))
+
+    def test_dataset_root_expands_the_home_directory(self) -> None:
+        # `--dataset-root=~/x` reaches Python unexpanded (no shell expansion after `=`).
+        (email,) = rust.select_datasets(["emailEucore"], Path("~/data"))
+        self.assertEqual(email.path, Path.home() / "data" / "emailEucore" / "emailEucore.txt")
 
     def test_dataset_jobs(self) -> None:
         (email,) = rust.select_datasets(["emailEucore"], Path("/data"))

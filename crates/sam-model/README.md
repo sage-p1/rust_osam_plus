@@ -192,8 +192,8 @@ next algorithm. A short run from a fixed `--start` fails the algorithm at
 once (except rw, whose moves are random). Rejected runs still execute on the SAM
 but are excluded from every statistic; their total is reported as
 `rejected_*`. The `algorithm` record gives the per-run means and variances of
-allocations, reads, writes and round trips (reads + writes, as in the Python
-parser) and the run `length`: visited vertices (bfs, dfs, dijkstra, prim),
+allocations, reads, writes and round trips (reads + writes; the launcher
+charges the r-ary pointer reads only, as the Python BOSAM figures do) and the run `length`: visited vertices (bfs, dfs, dijkstra, prim),
 walk moves (rw, pr), 2 neighbor-list retrievals (cd), or 1 (dtc, which has
 no natural step). Per-step costs are per-run costs divided by `length`, so a
 run's fixed costs (the start lookup, final deletions) are amortized over the
