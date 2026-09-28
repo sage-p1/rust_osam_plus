@@ -20,10 +20,15 @@ Differences from the Python launcher:
   So trials of different lengths are never mixed. Round trips are reads +
   writes, as in ``parse_er_tests.py``.
 * Recursive-pointer jobs also report the Path ORAM baseline the Python
-  parser plots: round trips scaled by the position-map recursion depth
-  ``ceil(max(log_{bs/8}(RecursivePointer allocations) - L, 1))``, with L = 1
-  at bs = 4096 and 4 otherwise (see ``oram_recursion_levels``). This needs no
+  parser plots: the round trips of the ORAM's structures (RecursivePointer
+  and SmartQueue, as parse_er_tests.py) scaled by the position-map recursion
+  depth ``ceil(max(log_{bs/8}(their allocations) - L, 1))``, with L = 1 at
+  bs = 4096 and 4 otherwise (see ``oram_recursion_levels``). This needs no
   crypto mode: the recursive pointer runs on the dry-run SAM.
+* Cache on runs the move pattern (the paper's OSAM w/ Move and OSAM+); cache
+  off runs Python's no-move pattern (``--no-move``: OSAM and ORAM), where
+  every access copies the object's nested pointers. Their logs carry
+  ``_move-false``.
 * The r-ary (multiwriterary) pointer fanout starts at the binary's default,
   floor((bs - 16) / 8) capped at 64, and is lowered automatically until its
   cells fit the block. With the compact r-ary cell (8 bytes per slot) the
@@ -115,7 +120,9 @@ TRIALS = 50
 EARLY_TERMINATING = ("rw", "bfs", "dfs", "dijkstra", "prim", "dtc")
 EARLY_TRIALS = TRIALS
 SUMMARY_FILES = ("summary.csv", "steps_by_index.csv", "structures.csv")
-RECURSIVE_STRUCTURES = ("RecursivePointer",)
+# The ORAM baseline's structures, as in osam's parse_er_tests.py: the
+# recursive pointer store and the traversal queue it also backs.
+RECURSIVE_STRUCTURES = ("RecursivePointer", "SmartQueue")
 
 # The Python launcher's defaults are tuned for a ~500 GiB server. Rust jobs
 # are much lighter; keep the same knobs but with laptop-friendly defaults.
@@ -437,6 +444,10 @@ class RustJob:
             name += f"_b-{self.pointer_bf}"
         if self.python_layout:
             name += "_layout-python"
+        if not self.cache_enabled:
+            # Cache-off jobs use Python's no-move access pattern; the suffix
+            # keeps them apart from logs of the old move-semantics runs.
+            name += "_move-false"
         if self.dataset is None and self.generator != "fast":
             name += f"_gen-{self.generator}"
         return name + self.options.tag
@@ -479,7 +490,9 @@ class RustJob:
             "--max-neighbors", str(MAX_NEIGHBORS),
             "--df", str(DAMPING_FACTOR),
             "--seed", str(self.seed),
-            "--cache" if self.cache_enabled else "--move",
+            # Cache on: the move pattern (OSAM w/ Move, OSAM+). Cache off:
+            # Python's no-move pattern (OSAM, ORAM), as in the Python runs.
+            *(["--cache"] if self.cache_enabled else ["--no-cache", "--no-move"]),
             "--crypto" if self.mode == "crypto" else "--dry-run",
             "--output", str(log_prefix.with_suffix(".log")),
             *self.options.flags(),
@@ -712,6 +725,7 @@ def report_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
         "bs": config.get("block_size"),
         "pointer": config.get("pointer"),
         "cache": config.get("cache"),
+        "move": config.get("move", True),
         "mode": config.get("mode"),
         "pointer_bf": config.get("pointer_branching_factor"),
         "graph_bf": config.get("graph_branching_factor"),
@@ -820,7 +834,7 @@ def structure_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
 
 
 FIELDS = [
-    "n", "edges", "bs", "pointer", "cache", "mode", "pointer_bf", "graph_bf", "layout", "alg",
+    "n", "edges", "bs", "pointer", "cache", "move", "mode", "pointer_bf", "graph_bf", "layout", "alg",
     "trials", "full_trials", "steps", "mean_steps_per_trial",
     "mean_allocations_per_step", "sd_allocations_per_step",
     "mean_reads_per_step", "sd_reads_per_step",

@@ -11,8 +11,9 @@ use sam_model::{
         OriginalCellValueCodec, OriginalPointers, PointerKind, RaryCellValueCodec, RaryPointers,
     },
     AccessPolicy, AccessStrategy, BlockCodec, CachedGraphPointerCodec, DryRunSam, GraphBackend,
-    GraphLayout, GraphValueCodec, MemoryClass, MultiWriteGraphPointerCodec, ObliviousGraph,
-    OriginalGraphPointerCodec, PathOsamSam, RaryGraphPointerCodec, SingleAccessMachine, U64Codec,
+    GraphLayout, GraphValueCodec, MemoryClass, MultiWriteGraphPointerCodec, NoMovePointers,
+    ObliviousGraph, OriginalGraphPointerCodec, PathOsamSam, RaryGraphPointerCodec,
+    SingleAccessMachine, TaggedGraphPointerCodec, U64Codec,
 };
 
 const STRUCTURE: &str = "encrypted-smoke-test";
@@ -144,6 +145,35 @@ fn original_graph_runs_encrypted() {
         CachedPointers::new(OriginalPointers),
         FixedSizeCodec::new(OriginalCellValueCodec::new(graph_codec(
             CachedGraphPointerCodec::new(OriginalGraphPointerCodec),
+        ))),
+    );
+}
+
+/// Python's no-move pattern on the encrypted SAM: every access copies and
+/// deletes nested pointers, so this exercises many more block rewrites.
+#[test]
+fn no_move_graph_runs_encrypted() {
+    encrypted_graph::<_, _, _, 128>(
+        PointerKind::Original,
+        NoMovePointers::new(OriginalPointers),
+        FixedSizeCodec::new(OriginalCellValueCodec::new(graph_codec(
+            TaggedGraphPointerCodec::new(OriginalGraphPointerCodec),
+        ))),
+    );
+    encrypted_graph::<_, _, _, 64>(
+        PointerKind::MultiWrite,
+        NoMovePointers::new(MultiWritePointers),
+        FixedSizeCodec::new(MultiWriteCellValueCodec::new(graph_codec(
+            TaggedGraphPointerCodec::new(MultiWriteGraphPointerCodec),
+        ))),
+    );
+    encrypted_graph::<_, _, _, 64>(
+        PointerKind::MultiWriteRary {
+            branching_factor: 4,
+        },
+        NoMovePointers::new(RaryPointers::new(4).unwrap()),
+        FixedSizeCodec::new(RaryCellValueCodec::new(graph_codec(
+            TaggedGraphPointerCodec::new(RaryGraphPointerCodec::new(4)),
         ))),
     );
 }

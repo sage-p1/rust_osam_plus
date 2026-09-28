@@ -12,8 +12,8 @@ use sam_model::{
         CachedPointers, MultiWritePointers, OriginalPointers, PointerKind, RaryPointers,
         RecursivePointers, SmartPointerBackend,
     },
-    DryRunSam, GraphBackend, GraphInput, GraphLayout, ObliviousGraph, SingleAccessMachine,
-    WeightedEdge,
+    DryRunSam, GraphBackend, GraphInput, GraphLayout, NoMovePointers, ObliviousGraph,
+    SingleAccessMachine, WeightedEdge,
 };
 
 /// Outgoing-edge fanout of the test graphs: hub vertices get 3-level trees.
@@ -191,6 +191,21 @@ macro_rules! backend_suite {
             fn static_build_equals_dynamic_build_cached() {
                 static_equals_dynamic($kind, || CachedPointers::new($make));
             }
+
+            #[test]
+            fn algorithms_match_reference_no_move() {
+                algorithms_match_reference($kind, NoMovePointers::new($make));
+            }
+
+            #[test]
+            fn dynamic_ops_match_reference_no_move() {
+                dynamic_ops_match_reference($kind, NoMovePointers::new($make));
+            }
+
+            #[test]
+            fn static_build_equals_dynamic_build_no_move() {
+                static_equals_dynamic($kind, || NoMovePointers::new($make));
+            }
         }
     };
 }
@@ -308,6 +323,10 @@ fn rary_pointers_survive_many_aliases_and_deletions() {
             kind,
             CachedPointers::new(RaryPointers::new(fanout).unwrap()),
         );
+        many_aliases_then_deletions(
+            kind,
+            NoMovePointers::new(RaryPointers::new(fanout).unwrap()),
+        );
     }
 }
 
@@ -316,6 +335,15 @@ fn other_pointers_survive_many_aliases_and_deletions() {
     many_aliases_then_deletions(PointerKind::MultiWrite, MultiWritePointers);
     many_aliases_then_deletions(PointerKind::Original, OriginalPointers);
     many_aliases_then_deletions(PointerKind::Recursive, RecursivePointers::default());
+    many_aliases_then_deletions(
+        PointerKind::MultiWrite,
+        NoMovePointers::new(MultiWritePointers),
+    );
+    many_aliases_then_deletions(PointerKind::Original, NoMovePointers::new(OriginalPointers));
+    many_aliases_then_deletions(
+        PointerKind::Recursive,
+        NoMovePointers::new(RecursivePointers::default()),
+    );
 }
 
 /// Every temporary pointer copy an algorithm makes is deleted: recursive
@@ -354,6 +382,79 @@ fn algorithms_leave_no_pointer_copies_behind() {
     let blocks = sam.live_blocks();
     assert_algorithms_match(&mut graph, &reference, &mut backend, &mut sam, 1);
     assert_eq!(sam.live_blocks(), blocks);
+
+    // No-move copies every nested pointer on each access and must delete
+    // every one of those copies again.
+    let kind = PointerKind::Recursive;
+    let mut backend = NoMovePointers::new(RecursivePointers::default());
+    let mut sam = sam_for::<_, NoMovePointers<RecursivePointers>>(kind);
+    let mut graph =
+        ObliviousGraph::build_static(&input, layout(kind), &mut backend, &mut sam).unwrap();
+    let references = backend.inner().live_references();
+    let blocks = sam.live_blocks();
+    assert_algorithms_match(&mut graph, &reference, &mut backend, &mut sam, 1);
+    assert_eq!(backend.inner().live_references(), references);
+    assert_eq!(sam.live_blocks(), blocks);
+
+    let kind = PointerKind::MultiWrite;
+    let mut backend = NoMovePointers::new(MultiWritePointers);
+    let mut sam = sam_for::<_, NoMovePointers<MultiWritePointers>>(kind);
+    let mut graph =
+        ObliviousGraph::build_static(&input, layout(kind), &mut backend, &mut sam).unwrap();
+    let blocks = sam.live_blocks();
+    assert_algorithms_match(&mut graph, &reference, &mut backend, &mut sam, 1);
+    assert_eq!(sam.live_blocks(), blocks);
+}
+
+/// No-move pays Python's copying on every access: more round trips than the
+/// move pattern for the single-read pointers, and for the recursive ORAM a
+/// read is a single read with no write-back.
+#[test]
+fn no_move_costs_more_than_move_and_reads_without_write_back() {
+    fn round_trips<P: Clone, B: GraphBackend<P>>(
+        kind: PointerKind,
+        mut backend: B,
+    ) -> (u64, u64, u64) {
+        let input = random_input(3, 40, FANOUT, FANOUT * FANOUT + 5);
+        let mut sam = sam_for::<P, B>(kind);
+        let mut graph =
+            ObliviousGraph::build_static(&input, layout(kind), &mut backend, &mut sam).unwrap();
+        let before = sam.stats().operations;
+        for start in input.vertices.iter().copied().step_by(5) {
+            graph
+                .random_walk(
+                    start,
+                    20,
+                    &mut StdRng::seed_from_u64(start),
+                    &mut backend,
+                    &mut sam,
+                )
+                .unwrap();
+            graph.bfs(start, Some(10), &mut backend, &mut sam).unwrap();
+        }
+        let after = sam.stats().operations;
+        let (reads, writes) = (after.reads - before.reads, after.writes - before.writes);
+        (reads + writes, reads, writes)
+    }
+    for kind in [PointerKind::Original, PointerKind::MultiWrite] {
+        let moved = match kind {
+            PointerKind::Original => round_trips(kind, OriginalPointers).0,
+            _ => round_trips(kind, MultiWritePointers).0,
+        };
+        let copied = match kind {
+            PointerKind::Original => round_trips(kind, NoMovePointers::new(OriginalPointers)).0,
+            _ => round_trips(kind, NoMovePointers::new(MultiWritePointers)).0,
+        };
+        assert!(copied > moved, "{kind:?}: no-move {copied} <= move {moved}");
+    }
+    let kind = PointerKind::Recursive;
+    let (_, reads, writes) = round_trips(kind, RecursivePointers::default());
+    assert_eq!(reads, writes, "the move pattern writes every read back");
+    let (_, reads, writes) = round_trips(kind, NoMovePointers::new(RecursivePointers::default()));
+    assert!(
+        writes < reads,
+        "no-move reads skip the write-back ({reads} reads, {writes} writes)"
+    );
 }
 
 /// Deleting a vertex frees its own edges and fan-out nodes; once the

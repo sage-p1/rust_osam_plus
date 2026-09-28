@@ -8,10 +8,12 @@
 
 mod algorithms;
 mod core;
+mod no_move;
 mod tree;
 
 pub use self::core::{ObliviousGraph, PRIME_WALK_LENGTH};
 pub use algorithms::{PageRankResult, ShortestPathResult, SpanningTreeResult, TriangleCountResult};
+pub use no_move::{NoMovePointers, Tagged, TaggedGraphPointerCodec};
 
 use crate::{
     pointer::{

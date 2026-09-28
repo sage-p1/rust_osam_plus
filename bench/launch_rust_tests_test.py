@@ -235,5 +235,21 @@ class GeneratorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             graphs.generate_graph(10, 2, 1, Path(directory) / "x", "slow")
 
+
+class NoMoveTest(unittest.TestCase):
+    def test_cache_off_jobs_run_python_no_move_and_are_named_apart(self) -> None:
+        off = rust.RustJob(64, 20, 4096, "original", False, "dry-run", None, Path("b"))
+        on = rust.RustJob(64, 20, 4096, "original", True, "dry-run", None, Path("b"))
+        off_command, on_command = off.command(off.log_prefix()), on.command(on.log_prefix())
+        self.assertIn("--no-move", off_command)
+        self.assertNotIn("--cache", off_command)
+        self.assertIn("--cache", on_command)
+        self.assertNotIn("--no-move", on_command)
+        self.assertIn("_move-false", off.name)
+        self.assertNotIn("_move-false", on.name)
+
+    def test_oram_counts_recursive_pointer_and_queue(self) -> None:
+        self.assertEqual(rust.RECURSIVE_STRUCTURES, ("RecursivePointer", "SmartQueue"))
+
 if __name__ == "__main__":
     unittest.main()

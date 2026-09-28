@@ -6,7 +6,7 @@
 //! records so launchers can parse it without regexes:
 //!
 //! ```text
-//! config impl=native mode=dry-run pointer=multiwriterary cache=false block_size=4096 ... build=static prime=false dynamic_ops=0
+//! config impl=native mode=dry-run pointer=multiwriterary cache=false move=true block_size=4096 ... build=static prime=false dynamic_ops=0
 //! build allocations=.. reads=.. writes=.. nanos=.. install_nanos=.. installation_maximum_stash=..
 //! prime walks=.. allocations=.. reads=.. writes=.. nanos=..            (with --prime)
 //! dynamic ops=.. add_vertex=.. add_edge=.. delete_edge=.. delete_vertex=.. allocations=.. reads=.. writes=.. nanos=.. tombstones=..   (with --dynamic-ops N)
@@ -36,9 +36,10 @@ use sam_model::{
         RaryPointers, RecursivePointer, RecursivePointers,
     },
     BlockCodec, CachedGraphPointerCodec, DryRunSam, GraphBackend, GraphInput, GraphLayout,
-    GraphObject, GraphValueCodec, MultiWriteGraphPointerCodec, ObliviousGraph, OperationCounts,
-    OriginalGraphPointerCodec, PathOsamSam, RaryGraphPointerCodec, RecursiveGraphPointerCodec,
-    SamError, SingleAccessMachine, StepKind, StructureStats, WeightedEdge,
+    GraphObject, GraphValueCodec, MultiWriteGraphPointerCodec, NoMovePointers, ObliviousGraph,
+    OperationCounts, OriginalGraphPointerCodec, PathOsamSam, RaryGraphPointerCodec,
+    RecursiveGraphPointerCodec, SamError, SingleAccessMachine, StepKind, StructureStats, Tagged,
+    TaggedGraphPointerCodec, WeightedEdge,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -73,6 +74,8 @@ struct Config {
     seed: u64,
     start: Option<u64>,
     cache: bool,
+    /// Python's no-move (uncached) access pattern: see `NoMovePointers`.
+    no_move: bool,
     crypto: bool,
     stash_size: u64,
     /// Keep per-address read/write-limit checks in the encrypted SAM. They are
@@ -182,7 +185,24 @@ fn run_with_output(config: &Config, input: &GraphInput, out: &mut dyn Write) -> 
                 }
                 Err(error) => return Err(error.into()),
             };
-            if config.cache {
+            if config.no_move {
+                run_selected::<Tagged<OriginalPointer>, _, _>(
+                    config,
+                    input,
+                    out,
+                    layout,
+                    NoMovePointers::new(OriginalPointers),
+                    DryRunSam::<OriginalCell<GraphObject<Tagged<OriginalPointer>>>>::new(
+                        kind.access_policy(),
+                    ),
+                    None,
+                    kind,
+                    FixedSizeCodec::new(OriginalCellValueCodec::new(GraphValueCodec::new(
+                        TaggedGraphPointerCodec::new(OriginalGraphPointerCodec),
+                        layout.graph_branching_factor(),
+                    )?)),
+                )?
+            } else if config.cache {
                 run_selected::<CachedPointer<OriginalPointer>, _, _>(
                     config,
                     input,
@@ -221,7 +241,24 @@ fn run_with_output(config: &Config, input: &GraphInput, out: &mut dyn Write) -> 
         "multiwrite" => {
             let kind = PointerKind::MultiWrite;
             let layout = GraphLayout::for_pointer_kind(config.block_size, kind)?;
-            if config.cache {
+            if config.no_move {
+                run_selected::<Tagged<MultiWritePointer>, _, _>(
+                    config,
+                    input,
+                    out,
+                    layout,
+                    NoMovePointers::new(MultiWritePointers),
+                    DryRunSam::<MultiWriteCell<GraphObject<Tagged<MultiWritePointer>>>>::new(
+                        kind.access_policy(),
+                    ),
+                    None,
+                    kind,
+                    FixedSizeCodec::new(MultiWriteCellValueCodec::new(GraphValueCodec::new(
+                        TaggedGraphPointerCodec::new(MultiWriteGraphPointerCodec),
+                        layout.graph_branching_factor(),
+                    )?)),
+                )?
+            } else if config.cache {
                 run_selected::<CachedPointer<MultiWritePointer>, _, _>(
                     config,
                     input,
@@ -262,7 +299,24 @@ fn run_with_output(config: &Config, input: &GraphInput, out: &mut dyn Write) -> 
                 branching_factor: pointer_bf,
             };
             let layout = GraphLayout::for_pointer_kind(config.block_size, kind)?;
-            if config.cache {
+            if config.no_move {
+                run_selected::<Tagged<RaryPointer>, _, _>(
+                    config,
+                    input,
+                    out,
+                    layout,
+                    NoMovePointers::new(RaryPointers::new(pointer_bf)?),
+                    DryRunSam::<RaryCell<GraphObject<Tagged<RaryPointer>>>>::new(
+                        kind.access_policy(),
+                    ),
+                    Some(pointer_bf),
+                    kind,
+                    FixedSizeCodec::new(RaryCellValueCodec::new(GraphValueCodec::new(
+                        TaggedGraphPointerCodec::new(RaryGraphPointerCodec::new(pointer_bf)),
+                        layout.graph_branching_factor(),
+                    )?)),
+                )?
+            } else if config.cache {
                 run_selected::<CachedPointer<RaryPointer>, _, _>(
                     config,
                     input,
@@ -299,7 +353,22 @@ fn run_with_output(config: &Config, input: &GraphInput, out: &mut dyn Write) -> 
         "recursive" => {
             let kind = PointerKind::Recursive;
             let layout = GraphLayout::for_pointer_kind(config.block_size, kind)?;
-            if config.cache {
+            if config.no_move {
+                run_selected::<Tagged<RecursivePointer>, _, _>(
+                    config,
+                    input,
+                    out,
+                    layout,
+                    NoMovePointers::new(RecursivePointers::default()),
+                    DryRunSam::<GraphObject<Tagged<RecursivePointer>>>::new(kind.access_policy()),
+                    None,
+                    kind,
+                    FixedSizeCodec::new(GraphValueCodec::new(
+                        TaggedGraphPointerCodec::new(RecursiveGraphPointerCodec),
+                        layout.graph_branching_factor(),
+                    )?),
+                )?
+            } else if config.cache {
                 run_selected::<CachedPointer<RecursivePointer>, _, _>(
                     config,
                     input,
@@ -778,13 +847,14 @@ where
 {
     writeln!(
         out,
-        "config impl=native mode={} pointer={} cache={} block_size={} pointer_branching_factor={} \
+        "config impl=native mode={} pointer={} cache={} move={} block_size={} pointer_branching_factor={} \
          graph_branching_factor={} vertices={} edges={} seed={} walk_length={} max_steps={} \
          max_neighbors={} damping_factor={} stash_size={} sam_policy_checks={} layout={} \
          build={} prime={} dynamic_ops={}",
         if config.crypto { "crypto" } else { "dry-run" },
         config.pointer,
         config.cache,
+        !config.no_move,
         config.block_size,
         opt(pointer_branching_factor),
         layout.graph_branching_factor(),
@@ -1154,7 +1224,12 @@ oblivious_graph_bench --graph FILE --bs BYTES --pt POINTER [options]
   --seed N            RNG seed (default 1)
   --start ID          fixed start vertex instead of random starts
   --pointer-branching-factor N   r-ary pointer fanout (even, >= 2)
-  --cache | --move    enable / disable the client pointer cache (default --move)
+  --cache | --move    enable / disable the client pointer cache (default --move).
+                      Accesses always move (read, work on, and write each object
+                      once), so the cache changes no counts.
+  --no-move           Python's no-move (uncached) access pattern: every access
+                      copies the object's nested pointers, and every change is a
+                      move + put (the paper's OSAM and ORAM series)
   --dry-run | --crypto [--stash-size N]   in-memory SAM (default) or Path OSAM+
   --pretend-original-fits   dry-run only: if `original` records cannot fit the block,
                       use Python's edge fanout (bs - 16) / 8 instead of failing;
@@ -1196,6 +1271,7 @@ fn parse_args() -> BenchResult<Config> {
     let mut seed = 1;
     let mut start = None;
     let mut cache = false;
+    let mut no_move = false;
     let mut crypto = false;
     let mut stash_size: u64 = 40; // osam_plus::DEFAULT_STASH_OVERFLOW_SIZE
     let mut output = None;
@@ -1228,6 +1304,7 @@ fn parse_args() -> BenchResult<Config> {
             "--start" => start = Some(value(&mut args)?.parse()?),
             "--cache" | "--caching" => cache = true,
             "--move" | "--no-cache" => cache = false,
+            "--no-move" | "--no_move" => no_move = true,
             "--no-copies" | "--no_copies" | "--no-prime" | "--no_prime" => {}
             "--staticinsertion" => dynamic_build = false,
             "--prime" => prime = true,
@@ -1259,6 +1336,9 @@ fn parse_args() -> BenchResult<Config> {
     }
     if trials == 0 {
         return Err("trials must be positive".into());
+    }
+    if no_move && cache {
+        return Err("--no-move and --cache exclude each other: the cache is a move pattern".into());
     }
     if pretend_original_fits && crypto {
         return Err("--pretend-original-fits is dry-run only: encrypted blocks must fit".into());
@@ -1307,6 +1387,7 @@ fn parse_args() -> BenchResult<Config> {
         seed,
         start,
         cache,
+        no_move,
         crypto,
         stash_size,
         check_sam_policy,

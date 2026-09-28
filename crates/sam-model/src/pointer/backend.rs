@@ -167,6 +167,23 @@ pub trait SmartPointerBackend<V: Clone> {
     where
         S: SingleAccessMachine<Self::Cell>,
         F: FnOnce(&mut V, &mut Self, &mut S) -> Result<R, SamError>;
+
+    /// [`Self::with_value`] for an operation that leaves the stored value's
+    /// representation unchanged. Backends whose addresses can be read more
+    /// than once (the recursive ORAM) skip the write-back; single-read
+    /// backends must write back anyway (the read consumed the address).
+    fn with_value_read<S, R, F>(
+        &mut self,
+        sam: &mut S,
+        pointer: &mut Self::Pointer,
+        operation: F,
+    ) -> Result<R, SamError>
+    where
+        S: SingleAccessMachine<Self::Cell>,
+        F: FnOnce(&mut V, &mut Self, &mut S) -> Result<R, SamError>,
+    {
+        self.with_value(sam, pointer, operation)
+    }
 }
 
 /// Backends whose SAM cells can also hold raw values written directly by an
@@ -780,6 +797,25 @@ impl<V: Clone> SmartPointerBackend<V> for RecursivePointers {
         F: FnOnce(&mut V, &mut Self, &mut S) -> Result<R, SamError>,
     {
         RecursivePointers::with_value(self, sam, *pointer, operation)
+    }
+
+    fn with_value_read<S, R, F>(
+        &mut self,
+        sam: &mut S,
+        pointer: &mut Self::Pointer,
+        operation: F,
+    ) -> Result<R, SamError>
+    where
+        S: SingleAccessMachine<Self::Cell>,
+        F: FnOnce(&mut V, &mut Self, &mut S) -> Result<R, SamError>,
+    {
+        // A multi-read address: read it and leave it in place. Copying the
+        // value's nested recursive pointers only touches client reference
+        // counts, so the stored value is unchanged.
+        let mut value = RecursivePointers::get(self, sam, *pointer)?.ok_or(
+            SamError::InvalidPointerCell("recursive pointer has no value"),
+        )?;
+        operation(&mut value, self, sam)
     }
 }
 

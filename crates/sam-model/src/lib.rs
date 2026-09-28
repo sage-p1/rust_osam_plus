@@ -21,10 +21,11 @@ pub use dry_run::DryRunSam;
 pub use error::SamError;
 pub use graph::{
     CachedGraphPointerCodec, DeletedObject, FanOut, GraphBackend, GraphInput, GraphLayout,
-    GraphObject, GraphPointerCodec, GraphValueCodec, MultiWriteGraphPointerCodec, ObliviousGraph,
-    OriginalGraphPointerCodec, PageRankResult, RaryGraphPointerCodec, RecursiveGraphPointerCodec,
-    ShortestPathResult, SpanningTreeResult, StepKind, StepMark, TriangleCountResult, Vertex,
-    WeightedEdge, GRAPH_POINTER_BYTES, PRIME_WALK_LENGTH,
+    GraphObject, GraphPointerCodec, GraphValueCodec, MultiWriteGraphPointerCodec, NoMovePointers,
+    ObliviousGraph, OriginalGraphPointerCodec, PageRankResult, RaryGraphPointerCodec,
+    RecursiveGraphPointerCodec, ShortestPathResult, SpanningTreeResult, StepKind, StepMark, Tagged,
+    TaggedGraphPointerCodec, TriangleCountResult, Vertex, WeightedEdge, GRAPH_POINTER_BYTES,
+    PRIME_WALK_LENGTH,
 };
 pub use path_osam::PathOsamSam;
 pub use sam::{

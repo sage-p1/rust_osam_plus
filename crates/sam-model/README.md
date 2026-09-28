@@ -193,7 +193,26 @@ benchmarks' generator (`bench/graphs.py`), writes the reusable edge list, and
 prints this command; `--run` launches one Rust process for the full build and
 trial set.
 
-## Client-side cache
+## Move and no-move access
+
+Graph code reads and writes each object once per operation and works on it
+in place (`with_value`): the move pattern of the Python benchmarks
+(`move-true`, the paper's OSAM w/ Move and OSAM⁺). Because of that the client
+cache below changes no counts.
+
+`NoMovePointers<B>` (`--no-move`) wraps any backend with Python's uncached
+`SmartPointer` cost model (`move-false`, the paper's OSAM and ORAM):
+
+- **read:** a full-ownership `get_attr`. One access copies every nested
+  pointer, the operation runs on the detached copy, then the copies are
+  deleted.
+- **change:** a `put_attr` (move + put). The stored object's nested pointers
+  are deleted and a smart copy of the new value is written.
+
+No object is held while another is accessed, and on the recursive ORAM a
+read has no write-back. The algorithms are unchanged; the wrapper tells
+reads from changes by tagging every alias it hands out (`Tagged`).
+
 
 The backends' cache hooks (`CacheablePointerBackend::deref_cached` and
 `copy_cached`) port Python's `deref_cached`/`splay_cached`/`copy_cached`.
