@@ -29,4 +29,11 @@ python3 launch_rust_tests.py --datasets emailEucore --no-crypto
 python3 launch_rust_tests.py --report-only
 ```
 
-Requires `networkx` (and `pandas` for datasets).
+Setup (Python >= 3.11, which networkx 3.6 and pandas 3.0 require):
+
+```bash
+pip install -r requirements.txt
+```
+
+`networkx` generates the ER graphs and is pinned to the Python benchmarks'
+version, so the same seed gives the same graph. `pandas` parses the datasets.

@@ -1,0 +1,8 @@
+# Python dependencies of the Rust benchmark scripts in this directory
+# (Python >= 3.11; networkx 3.6 and pandas 3.0 need it). Install with: pip install -r requirements.txt
+#
+# Versions match osam/requirements.txt. Keep networkx in sync with the Python
+# benchmarks: graphs.generate_graph calls networkx.erdos_renyi_graph, so the
+# same seed gives the same ER graph only with the same networkx version.
+networkx==3.6.1
+pandas==3.0.1  # dataset parsing (--datasets); pulls in numpy
