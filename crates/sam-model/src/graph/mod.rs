@@ -187,7 +187,13 @@ impl GraphLayout {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Vertex<P> {
     pub id: u64,
+    /// The occupied prefix of the top-level slots (leaves are packed to the
+    /// left, so occupied slots are always a prefix). Encoding pads it to the
+    /// layout's `fanout` slots; decoding trims the empty tail.
     pub out_children: Vec<Option<P>>,
+    /// The graph fanout: slots per record in the block layout. In memory
+    /// only; the codec restores it from its layout.
+    pub fanout: usize,
     pub out_degree: u64,
     pub height: u64,
     pub visited: bool,
@@ -197,6 +203,8 @@ pub struct Vertex<P> {
 /// Leaf or internal node in an outgoing-edge tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FanOut<P> {
+    /// The occupied prefix of the child slots (empty for a leaf); see
+    /// [`Vertex::out_children`].
     pub children: Vec<Option<P>>,
     pub edge: Option<P>,
     pub weight: i64,
@@ -210,7 +218,8 @@ impl<P> Vertex<P> {
     pub fn new(id: u64, fanout: usize) -> Self {
         Self {
             id,
-            out_children: empty_children(fanout),
+            out_children: Vec::new(),
+            fanout,
             out_degree: 0,
             height: 0,
             visited: false,
@@ -221,9 +230,9 @@ impl<P> Vertex<P> {
 
 impl<P> FanOut<P> {
     /// A leaf holding one outgoing edge: an alias of the destination's pointer.
-    pub fn leaf(edge: P, weight: i64, destination: u64, fanout: usize) -> Self {
+    pub fn leaf(edge: P, weight: i64, destination: u64) -> Self {
         Self {
-            children: empty_children(fanout),
+            children: Vec::new(),
             edge: Some(edge),
             weight,
             destination: Some(destination),
@@ -467,6 +476,7 @@ impl<P, C: GraphPointerCodec<P>> ValueCodec<GraphObject<P>> for GraphValueCodec<
                 visited: get_bool(input)?,
                 label: get_option_i64(input)?,
                 out_children: self.get_children(input)?,
+                fanout: self.graph_branching_factor,
             })),
             1 => Ok(GraphObject::FanOut(FanOut {
                 edge: self.get_pointer(input)?,
@@ -606,8 +616,13 @@ impl<C> GraphValueCodec<C> {
     where
         C: GraphPointerCodec<P>,
     {
+        // Records keep only their occupied prefix in memory; blocks always
+        // hold the layout's full slot count.
         for child in children {
             self.put_pointer(child, output)?;
+        }
+        for _ in children.len()..self.graph_branching_factor {
+            self.put_pointer::<P>(&None, output)?;
         }
         Ok(())
     }
@@ -616,9 +631,13 @@ impl<C> GraphValueCodec<C> {
     where
         C: GraphPointerCodec<P>,
     {
-        (0..self.graph_branching_factor)
+        let mut children = (0..self.graph_branching_factor)
             .map(|_| self.get_pointer(input))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        while matches!(children.last(), Some(None)) {
+            children.pop();
+        }
+        Ok(children)
     }
 }
 
@@ -656,8 +675,9 @@ impl GraphInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StepKind {
     /// One completed algorithm step ended here: a vertex visited (traversals),
-    /// a walk move (random walk, PageRank), or one neighbor-list retrieval
-    /// (contact discovery, directed triangle count).
+    /// a walk move (random walk, PageRank), one neighbor-list retrieval
+    /// (contact discovery), or the whole run (directed triangle count, which
+    /// has no natural step: one `Step` per trial).
     Step,
     /// The algorithm's main loop ended. Work since the last `Step` did not
     /// complete a step (a traversal draining its frontier, a walk at a sink).
@@ -673,14 +693,10 @@ pub struct StepMark {
     pub operations: OperationCounts,
 }
 
-fn empty_children<P>(fanout: usize) -> Vec<Option<P>> {
-    std::iter::repeat_with(|| None).take(fanout).collect()
-}
-
 fn check_children<P>(children: &[Option<P>], expected: usize) -> Result<(), SamError> {
-    if children.len() != expected {
+    if children.len() > expected {
         return Err(SamError::Backend(format!(
-            "graph record has {} child slots but its block layout requires {expected}",
+            "graph record has {} child slots but its block layout holds {expected}",
             children.len()
         )));
     }
@@ -859,14 +875,14 @@ mod tests {
             GraphValueCodec::new(MultiWriteGraphPointerCodec, layout.graph_branching_factor())
                 .unwrap(),
         ));
+        // In memory a record keeps only its occupied slots; the block holds
+        // all `graph_branching_factor` of them.
         let value = MultiWriteCell::Root(GraphObject::Vertex(Vertex {
             id: 4,
-            out_children: vec![
-                Some(MultiWritePointer::from_persisted_head(Address::Oblivious(
-                    7,
-                ))),
-                None,
-            ],
+            out_children: vec![Some(MultiWritePointer::from_persisted_head(
+                Address::Oblivious(7),
+            ))],
+            fanout: 2,
             out_degree: 1,
             height: 1,
             visited: false,
@@ -874,6 +890,21 @@ mod tests {
         }));
         let block: [u8; 64] = codec.encode(&value).unwrap();
         assert_eq!(codec.decode(&block).unwrap(), value);
+        // A record padded in memory encodes to the same block.
+        let MultiWriteCell::Root(GraphObject::Vertex(mut padded)) = value.clone() else {
+            unreachable!()
+        };
+        padded.out_children.push(None);
+        let padded = MultiWriteCell::Root(GraphObject::Vertex(padded));
+        assert_eq!(codec.encode(&padded).unwrap(), block);
+        // More slots than the layout holds is an error.
+        let MultiWriteCell::Root(GraphObject::Vertex(mut wide)) = value else {
+            unreachable!()
+        };
+        wide.out_children.extend([None, None]);
+        let wide: Result<[u8; 64], _> =
+            codec.encode(&MultiWriteCell::Root(GraphObject::Vertex(wide)));
+        assert!(wide.is_err());
     }
 
     /// Every structure cell the graph writes, with a pointer item.

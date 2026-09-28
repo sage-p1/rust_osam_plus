@@ -476,3 +476,27 @@ fn priming_keeps_the_graph_intact() {
     primed(kind, CachedPointers::new(RaryPointers::new(4).unwrap()));
     primed(PointerKind::Original, OriginalPointers);
 }
+
+#[test]
+fn dtc_marks_one_step_per_trial_covering_the_whole_run() {
+    use sam_model::StepKind;
+    let input = random_input(9, 40, FANOUT, 12);
+    let kind = PointerKind::MultiWrite;
+    let mut backend = MultiWritePointers;
+    let mut sam = sam_for::<_, MultiWritePointers>(kind);
+    let mut graph =
+        ObliviousGraph::build_static(&input, layout(kind), &mut backend, &mut sam).unwrap();
+    graph.step_marks = Some(Vec::new());
+    let before = sam.stats().operations;
+    graph
+        .directed_triangle_count(input.vertices[0], Some(5), &mut backend, &mut sam)
+        .unwrap();
+    let after = sam.stats().operations;
+    let marks = graph.step_marks.take().unwrap();
+    let kinds: Vec<_> = marks.iter().map(|mark| mark.kind).collect();
+    assert_eq!(kinds, vec![StepKind::Step, StepKind::Tail]);
+    // The single step ends where the run ends: it covers everything.
+    assert_eq!(marks[0].operations, after);
+    assert_eq!(marks[1].operations, after);
+    assert!(after.reads > before.reads);
+}

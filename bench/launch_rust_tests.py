@@ -12,7 +12,8 @@ Differences from the Python launcher:
 
 * Costs are reported **per algorithm step**, over completed steps only: a
   vertex visited (bfs, dfs, dijkstra, prim), a walk move (rw, pr), or one
-  neighbor-list retrieval (cd, dtc). A trial that stops early (a traversal
+  neighbor-list retrieval (cd). dtc has no natural step, so a dtc trial is
+  one step and its "per-step" cost is the whole run. A trial that stops early (a traversal
   whose frontier empties before ``MAX_STEPS`` vertices, a walk at a sink)
   contributes the steps it completed; its leftover work is reported
   separately as the trial's *tail*, and resetting visited flags as *cleanup*.

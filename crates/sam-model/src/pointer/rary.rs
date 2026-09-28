@@ -1,5 +1,6 @@
 use crate::{Address, MemoryClass, SamError, SingleAccessMachine};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 const STRUCTURE: &str = "SmartPointerMultiWriteRary";
 
@@ -16,7 +17,10 @@ pub enum RaryCell<V> {
     /// A member of a sibling group. Every live member stores the same group.
     Node {
         parent: Address,
-        group: Vec<Option<Address>>,
+        /// The group's members, compact from slot 0. Slots past the end are
+        /// empty; in memory the group is not padded to the fanout, and the
+        /// members' cells share one allocation (cloning a cell is cheap).
+        group: Arc<[Option<Address>]>,
         index: usize,
     },
 }
@@ -126,8 +130,9 @@ impl RaryPointer {
                 "duplicate address in r-ary group",
             ));
         }
-        let mut group = members.iter().copied().map(Some).collect::<Vec<_>>();
-        group.resize(branching_factor, None);
+        // Compact, unpadded (slots past `members.len()` are empty), and
+        // shared by every member's cell.
+        let group: Arc<[Option<Address>]> = members.iter().copied().map(Some).collect();
         sam.write_batch(
             members
                 .iter()
@@ -161,7 +166,7 @@ impl RaryPointer {
         let RaryCell::Node { group, index, .. } = cell else {
             return Ok(());
         };
-        if group.len() != branching_factor {
+        if group.is_empty() || group.len() > branching_factor {
             return Err(SamError::InvalidPointerCell("malformed r-ary group"));
         }
         let slot = group
@@ -186,16 +191,21 @@ impl RaryPointer {
         index: usize,
         branching_factor: usize,
     ) -> Result<Vec<Vec<Address>>, SamError> {
-        Ok(Self::sibling_blocks(index, group.len(), branching_factor)?
-            .into_iter()
-            .filter_map(|block| {
-                let members = block
-                    .into_iter()
-                    .filter_map(|slot| group[slot])
-                    .collect::<Vec<_>>();
-                (!members.is_empty()).then_some(members)
-            })
-            .collect())
+        // The virtual-binary split is over all `branching_factor` slots
+        // (whether or not the group is padded), so read patterns do not
+        // depend on how the group is stored.
+        Ok(
+            Self::sibling_blocks(index, branching_factor, branching_factor)?
+                .into_iter()
+                .filter_map(|block| {
+                    let members = block
+                        .into_iter()
+                        .filter_map(|slot| group.get(slot).copied().flatten())
+                        .collect::<Vec<_>>();
+                    (!members.is_empty()).then_some(members)
+                })
+                .collect(),
+        )
     }
 
     fn live_members(group: &[Option<Address>]) -> Vec<Address> {
@@ -295,7 +305,7 @@ impl RaryPointer {
                         .map(|_| sam.alloc(MemoryClass::Oblivious, STRUCTURE))
                         .collect::<Vec<_>>();
                     let mut expanded = Vec::with_capacity(live.len() - 1 + count);
-                    for (slot, member) in group.into_iter().enumerate() {
+                    for (slot, member) in group.iter().copied().enumerate() {
                         if slot == index {
                             expanded.extend(replacements.iter().copied());
                         } else if let Some(member) = member {
@@ -307,7 +317,8 @@ impl RaryPointer {
                 } else {
                     let internal = sam.alloc(MemoryClass::Oblivious, STRUCTURE);
                     let upper = group
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .enumerate()
                         .filter_map(|(slot, member)| {
                             if slot == index {
@@ -716,7 +727,7 @@ impl RaryPointer {
     fn remove_from_group<V: Clone, S: SingleAccessMachine<RaryCell<V>>>(
         sam: &mut S,
         parent: Address,
-        group: Vec<Option<Address>>,
+        group: Arc<[Option<Address>]>,
         index: usize,
         branching_factor: usize,
     ) -> Result<(), SamError> {
@@ -786,7 +797,8 @@ impl RaryPointer {
                     let mut lower = survivors;
                     lower.push(borrowed);
                     let upper = group
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .enumerate()
                         .filter_map(|(slot, member)| {
                             if slot == index {
@@ -802,7 +814,7 @@ impl RaryPointer {
                     Self::normalize_group(sam, &upper, grandparent, branching_factor)
                 } else {
                     let mut merged = Vec::new();
-                    for (slot, member) in group.into_iter().enumerate() {
+                    for (slot, member) in group.iter().copied().enumerate() {
                         if slot == index {
                             merged.extend(survivors.iter().copied());
                         } else if let Some(member) = member {
@@ -838,7 +850,8 @@ impl RaryPointer {
                 index,
             } => {
                 let replacement = group
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .enumerate()
                     .filter_map(
                         |(slot, member)| {

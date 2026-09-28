@@ -171,7 +171,8 @@ on success.
 
 Algorithms mark their step boundaries (`ObliviousGraph::step_marks`): a
 vertex visited (bfs, dfs, dijkstra, prim), a walk move (rw, pr), or a
-neighbor-list retrieval (cd, dtc). The benchmark reports per-step means and
+neighbor-list retrieval (cd). dtc has no natural step, so each trial is one
+step and its per-step cost is the whole run. The benchmark reports per-step means and
 variances of allocations, reads, writes and round trips (reads + writes, as in
 the Python parser) over completed steps only (`steps`, and per step index in
 `stepindex`); a trial's work after its last completed step (`tail_*`) and its

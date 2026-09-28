@@ -268,7 +268,7 @@ impl<V, C: ValueCodec<V>> ValueCodec<RaryCell<V>> for RaryCellValueCodec<C> {
                 output.push(u8::try_from(group.len()).map_err(|_| {
                     SamError::Backend("r-ary groups are limited to 255 slots".into())
                 })?);
-                for member in group {
+                for member in group.iter() {
                     put_tree_address(*member, output)?;
                 }
             }
@@ -289,7 +289,7 @@ impl<V, C: ValueCodec<V>> ValueCodec<RaryCell<V>> for RaryCellValueCodec<C> {
                 }
                 Ok(RaryCell::Node {
                     parent,
-                    group,
+                    group: group.into(),
                     index: UNRESOLVED_RARY_INDEX,
                 })
             }
@@ -430,7 +430,7 @@ mod tests {
         let rary = FixedSizeCodec::new(RaryCellValueCodec::new(U64ValueCodec));
         let node = RaryCell::<u64>::Node {
             parent: a,
-            group: vec![Some(a), None, Some(Address::Oblivious(11)), None],
+            group: vec![Some(a), None, Some(Address::Oblivious(11)), None].into(),
             index: 0,
         };
         let block: [u8; 128] = rary.encode(&node).unwrap();
@@ -463,7 +463,7 @@ mod tests {
                 .encode_value(
                     &RaryCell::<u64>::Node {
                         parent: Address::Oblivious(9),
-                        group,
+                        group: group.into(),
                         index: 1,
                     },
                     &mut encoded,
@@ -477,14 +477,14 @@ mod tests {
         let block: Result<[u8; 64], _> =
             FixedSizeCodec::new(codec.clone()).encode(&RaryCell::<u64>::Node {
                 parent: Address::Oblivious(2),
-                group,
+                group: group.into(),
                 index: 5,
             });
         assert!(block.is_ok());
         let mut encoded = Vec::new();
         let plaintext = RaryCell::<u64>::Node {
             parent: Address::Plaintext(2),
-            group: vec![Some(Address::Oblivious(3)), None],
+            group: vec![Some(Address::Oblivious(3)), None].into(),
             index: 0,
         };
         assert!(codec.encode_value(&plaintext, &mut encoded).is_err());

@@ -547,7 +547,6 @@ impl<P: Clone> ObliviousGraph<P> {
                 firsts.enqueue::<B, P, S>(sam, MemoryClass::Oblivious, item)
             },
         )?;
-        self.mark(StepKind::Step, sam.stats().operations);
         complete &= full(count);
         while !firsts.is_empty() {
             let (mut first_pointer, first) = self.dequeue_neighbor(&mut firsts, backend, sam)?;
@@ -564,7 +563,6 @@ impl<P: Clone> ObliviousGraph<P> {
                 },
             )?;
             backend.delete(sam, &mut first_pointer)?;
-            self.mark(StepKind::Step, sam.stats().operations);
             complete &= full(count);
             while !seconds.is_empty() {
                 let (mut second_pointer, second) =
@@ -582,7 +580,6 @@ impl<P: Clone> ObliviousGraph<P> {
                     },
                 )?;
                 backend.delete(sam, &mut second_pointer)?;
-                self.mark(StepKind::Step, sam.stats().operations);
                 complete &= full(count);
                 if closes {
                     triangles.push((source as usize, first as usize, second as usize));
@@ -591,6 +588,10 @@ impl<P: Clone> ObliviousGraph<P> {
             seconds.dequeue::<B, P, S>(sam)?;
         }
         firsts.dequeue::<B, P, S>(sam)?;
+        // DTC has no natural step, so the whole run is one step: a single
+        // `Step` at the end (per-step costs are whole-run costs) and an empty
+        // tail.
+        self.mark(StepKind::Step, sam.stats().operations);
         self.mark(StepKind::Tail, sam.stats().operations);
         Ok(TriangleCountResult {
             triangles,

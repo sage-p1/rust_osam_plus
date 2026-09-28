@@ -193,7 +193,7 @@ impl<P: Clone> ObliviousGraph<P> {
                     .ok_or(SamError::InvalidPointerCell("missing destination alias"))?;
                 level.push(backend.new_pointer(
                     sam,
-                    GraphObject::FanOut(FanOut::leaf(edge, *weight, *destination as u64, fanout)),
+                    GraphObject::FanOut(FanOut::leaf(edge, *weight, *destination as u64)),
                 )?);
             }
             // Grouping consecutive runs of `fanout` nodes level by level puts
@@ -202,8 +202,7 @@ impl<P: Clone> ObliviousGraph<P> {
                 let mut parents = Vec::with_capacity(level.len().div_ceil(fanout));
                 let mut members = level.into_iter().peekable();
                 while members.peek().is_some() {
-                    let mut children = members.by_ref().take(fanout).map(Some).collect::<Vec<_>>();
-                    children.resize_with(fanout, || None);
+                    let children = members.by_ref().take(fanout).map(Some).collect::<Vec<_>>();
                     parents.push(
                         backend
                             .new_pointer(sam, GraphObject::FanOut(FanOut::internal(children)))?,
@@ -211,8 +210,7 @@ impl<P: Clone> ObliviousGraph<P> {
                 }
                 level = parents;
             }
-            let mut out_children = level.into_iter().map(Some).collect::<Vec<_>>();
-            out_children.resize_with(fanout, || None);
+            let out_children = level.into_iter().map(Some).collect::<Vec<_>>();
             let out_degree = edges.len() as u64;
             backend.put(
                 sam,
@@ -220,6 +218,7 @@ impl<P: Clone> ObliviousGraph<P> {
                 GraphObject::Vertex(Vertex {
                     id: source as u64,
                     out_children,
+                    fanout,
                     out_degree,
                     height: tree::tree_height(out_degree, fanout),
                     visited: false,
@@ -409,10 +408,9 @@ impl<P: Clone> ObliviousGraph<P> {
         let (edge, destination_id) = self
             .get_pointer(destination, backend, sam)?
             .ok_or(SamError::InvalidParameter("edge destination is missing"))?;
-        let fanout = self.graph_branching_factor();
         let leaf = backend.new_pointer(
             sam,
-            GraphObject::FanOut(FanOut::leaf(edge, weight, destination_id, fanout)),
+            GraphObject::FanOut(FanOut::leaf(edge, weight, destination_id)),
         )?;
         let check_live = self.tombstones > 0;
         self.with_vertex(source_id, backend, sam, |vertex, backend, sam| {

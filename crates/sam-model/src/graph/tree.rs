@@ -8,6 +8,10 @@
 //! therefore packed to the left and the tree is balanced; every function
 //! here preserves that invariant.
 //!
+//! In memory a record keeps only the occupied prefix of its slots (a
+//! left-packed tree has no gaps), so the functions here grow and shrink the
+//! slot lists; the codec pads them to the block layout.
+//!
 //! All functions operate on a vertex that the caller holds inside a scoped
 //! pointer access (`with_value`), so the vertex is written back once, with
 //! its updated slots, when the caller's access ends. Tree nodes are reached
@@ -19,7 +23,7 @@
 //! caller aliases the vertex once the access ends), and deletions return
 //! such edges to the caller instead of deleting them.
 
-use super::{empty_children, FanOut, GraphBackend, GraphObject, Vertex};
+use super::{FanOut, GraphBackend, GraphObject, Vertex};
 use crate::{
     structures::{queue::SmartQueue, Item},
     MemoryClass, SamError, SingleAccessMachine,
@@ -96,7 +100,7 @@ fn node_mut<P>(object: &mut GraphObject<P>, leaf: bool) -> Result<&mut FanOut<P>
 /// Stores `leaf` at the slot named by `digits`, creating the internal nodes
 /// of a new (leftmost-first) subtree on the way.
 fn place<P, B, S>(
-    children: &mut [Option<P>],
+    children: &mut Vec<Option<P>>,
     digits: &[usize],
     leaf: P,
     backend: &mut B,
@@ -107,9 +111,13 @@ where
     B: GraphBackend<P>,
     S: SingleAccessMachine<B::Cell>,
 {
-    let fanout = children.len();
     let (&first, rest) = digits.split_first().ok_or(corrupt("empty fan-out path"))?;
-    let slot = &mut children[first];
+    if first == children.len() {
+        children.push(None);
+    }
+    let slot = children
+        .get_mut(first)
+        .ok_or(corrupt("fan-out tree is not packed to the left"))?;
     if rest.is_empty() {
         if slot.is_some() {
             return Err(corrupt("fan-out slot is already occupied"));
@@ -134,9 +142,7 @@ where
     }
     let mut node = leaf;
     for _ in rest {
-        let mut children = empty_children(fanout);
-        children[0] = Some(node);
-        node = backend.new_pointer(sam, GraphObject::FanOut(FanOut::internal(children)))?;
+        node = backend.new_pointer(sam, GraphObject::FanOut(FanOut::internal(vec![Some(node)])))?;
     }
     *slot = Some(node);
     Ok(())
@@ -145,7 +151,7 @@ where
 /// Removes and returns the leaf pointer at `digits`, deleting internal nodes
 /// that become empty.
 fn take<P, B, S>(
-    children: &mut [Option<P>],
+    children: &mut Vec<Option<P>>,
     digits: &[usize],
     backend: &mut B,
     sam: &mut S,
@@ -156,19 +162,27 @@ where
     S: SingleAccessMachine<B::Cell>,
 {
     let (&first, rest) = digits.split_first().ok_or(corrupt("empty fan-out path"))?;
-    let slot = &mut children[first];
-    if rest.is_empty() {
-        return slot.take().ok_or(corrupt("missing fan-out leaf"));
-    }
-    let child = slot.as_mut().ok_or(corrupt("missing fan-out node"))?;
-    let (leaf, empty) = backend.with_value(sam, child, |object, backend, sam| {
-        let node = node_mut(object, false)?;
-        let leaf = take(&mut node.children, rest, backend, sam)?;
-        Ok((leaf, node.children.iter().all(Option::is_none)))
-    })?;
-    if empty {
-        let mut node = slot.take().ok_or(corrupt("missing fan-out node"))?;
-        backend.delete(sam, &mut node)?;
+    let slot = children
+        .get_mut(first)
+        .ok_or(corrupt("missing fan-out slot"))?;
+    let leaf = if rest.is_empty() {
+        slot.take().ok_or(corrupt("missing fan-out leaf"))?
+    } else {
+        let child = slot.as_mut().ok_or(corrupt("missing fan-out node"))?;
+        let (leaf, empty) = backend.with_value(sam, child, |object, backend, sam| {
+            let node = node_mut(object, false)?;
+            let leaf = take(&mut node.children, rest, backend, sam)?;
+            Ok((leaf, node.children.is_empty()))
+        })?;
+        if empty {
+            let mut node = slot.take().ok_or(corrupt("missing fan-out node"))?;
+            backend.delete(sam, &mut node)?;
+        }
+        leaf
+    };
+    // Keep only the occupied prefix (a removed last leaf leaves a gap at the end).
+    while matches!(children.last(), Some(None)) {
+        children.pop();
     }
     Ok(leaf)
 }
@@ -188,12 +202,13 @@ where
     F: FnOnce(&mut Option<P>, &mut B, &mut S) -> Result<T>,
 {
     let (&first, rest) = digits.split_first().ok_or(corrupt("empty fan-out path"))?;
+    let slot = children
+        .get_mut(first)
+        .ok_or(corrupt("missing fan-out slot"))?;
     if rest.is_empty() {
-        return operation(&mut children[first], backend, sam);
+        return operation(slot, backend, sam);
     }
-    let child = children[first]
-        .as_mut()
-        .ok_or(corrupt("missing fan-out node"))?;
+    let child = slot.as_mut().ok_or(corrupt("missing fan-out node"))?;
     backend.with_value(sam, child, |object, backend, sam| {
         with_slot(
             &mut node_mut(object, false)?.children,
@@ -242,7 +257,7 @@ where
 /// Dismantles the tree below `children`: deletes every internal node and
 /// hands each leaf pointer, in index order, to `sink`.
 fn drain<P, B, S>(
-    children: &mut [Option<P>],
+    children: &mut Vec<Option<P>>,
     levels: u64,
     backend: &mut B,
     sam: &mut S,
@@ -267,6 +282,7 @@ where
         })?;
         backend.delete(sam, &mut child)?;
     }
+    children.clear();
     Ok(())
 }
 
@@ -330,7 +346,7 @@ where
     B: GraphBackend<P>,
     S: SingleAccessMachine<B::Cell>,
 {
-    let fanout = vertex.out_children.len();
+    let fanout = vertex.fanout;
     if vertex.height == 0 {
         vertex.height = 1;
     } else if vertex.out_degree == capacity(vertex.height, fanout) {
@@ -340,9 +356,9 @@ where
             ));
         }
         // The old top level becomes the first child of a new root node.
-        let old = std::mem::replace(&mut vertex.out_children, empty_children(fanout));
+        let old = std::mem::take(&mut vertex.out_children);
         let node = backend.new_pointer(sam, GraphObject::FanOut(FanOut::internal(old)))?;
-        vertex.out_children[0] = Some(node);
+        vertex.out_children = vec![Some(node)];
         vertex.height += 1;
     }
     let path = digits(vertex.out_degree, vertex.height, fanout);
@@ -367,7 +383,7 @@ where
     if index >= vertex.out_degree {
         return Err(SamError::InvalidParameter("edge index is out of range"));
     }
-    let fanout = vertex.out_children.len();
+    let fanout = vertex.fanout;
     let last = vertex.out_degree - 1;
     let moved = take(
         &mut vertex.out_children,
@@ -392,14 +408,14 @@ where
     }
     while vertex.height > 1 && vertex.out_degree <= capacity(vertex.height - 1, fanout) {
         // Every leaf now lies below the first top-level node: lift its children.
+        if vertex.out_children.len() != 1 {
+            return Err(corrupt("fan-out tree is not packed to the left"));
+        }
         let mut node = vertex.out_children[0]
             .take()
             .ok_or(corrupt("missing fan-out node"))?;
         let children = backend.with_value(sam, &mut node, |object, _, _| {
-            Ok(std::mem::replace(
-                &mut node_mut(object, false)?.children,
-                empty_children(fanout),
-            ))
+            Ok(std::mem::take(&mut node_mut(object, false)?.children))
         })?;
         backend.delete(sam, &mut node)?;
         vertex.out_children = children;
@@ -459,7 +475,7 @@ where
     if index >= vertex.out_degree {
         return Err(SamError::InvalidParameter("edge index is out of range"));
     }
-    let path = digits(index, vertex.height, vertex.out_children.len());
+    let path = digits(index, vertex.height, vertex.fanout);
     with_slot(
         &mut vertex.out_children,
         &path,
