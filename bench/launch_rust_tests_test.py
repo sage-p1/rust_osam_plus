@@ -12,15 +12,15 @@ def log_lines(pointer: str = "multiwriterary", bs: int = 64) -> list[str]:
         "pointer_branching_factor=6 graph_branching_factor=2 vertices=10 edges=20 layout=exact",
         "build allocations=1 reads=1 writes=1 nanos=5 install_nanos=none installation_maximum_stash=none",
         f"structure phase=build name=RecursivePointer allocations=5000 reads=0 writes=5000 roundtrips=5000",
-        "trial alg=bfs index=0 allocations=1 reads=10 writes=10 nanos=1000000 size=3 full=0 "
-        "cost=none stash_peak=none steps=3 tail_reads=4 tail_writes=4 cleanup_reads=1 cleanup_writes=1",
-        "trial alg=bfs index=1 allocations=1 reads=12 writes=12 nanos=3000000 size=4 full=0 "
-        "cost=none stash_peak=none steps=4 tail_reads=2 tail_writes=2 cleanup_reads=1 cleanup_writes=1",
-        "steps alg=bfs count=7 mean_steps_per_trial=3.5000 mean_allocations=0.0000 var_allocations=0.0000 "
-        "mean_reads=2.0000 var_reads=0.2500 mean_writes=2.0000 var_writes=0.2500 "
-        "mean_roundtrips=4.0000 var_roundtrips=1.0000 mean_tail_roundtrips=6.0000 mean_cleanup_roundtrips=2.0000",
-        "stepindex alg=bfs index=0 count=2 mean_allocations=0.0000 var_allocations=0.0000 mean_reads=2.0000 "
-        "var_reads=0.0000 mean_writes=2.0000 var_writes=0.0000 mean_roundtrips=4.0000 var_roundtrips=0.0000",
+        "trial alg=bfs index=0 start=3 attempts=1 allocations=1 reads=10 writes=10 roundtrips=20 "
+        "nanos=1000000 size=4 cost=none stash_peak=none",
+        "trial alg=bfs index=1 start=7 attempts=2 allocations=1 reads=12 writes=12 roundtrips=24 "
+        "nanos=3000000 size=4 cost=none stash_peak=none",
+        "algorithm alg=bfs status=ok trials=2 requested=2 attempts=3 length=4 allocations=2 reads=22 writes=22 nanos=4000000 "
+        "mean_allocations=1.0000 var_allocations=0.0000 mean_reads=11.0000 var_reads=2.0000 "
+        "mean_writes=11.0000 var_writes=2.0000 mean_roundtrips=22.0000 var_roundtrips=8.0000 "
+        "rejected_allocations=1 rejected_roundtrips=6 maximum_stash=none maximum_cached_values=none "
+        "cache_cleared=0",
         "structure phase=bfs name=RecursivePointer allocations=0 reads=22 writes=22 roundtrips=44",
         "done",
     ]
@@ -43,18 +43,46 @@ class RustLauncherTest(unittest.TestCase):
         self.assertEqual(rust.oram_recursion_levels(8**10, 64), 6)
         self.assertIsNone(rust.oram_recursion_levels(0, 64))
 
-    def test_report_is_per_completed_step(self) -> None:
+    def test_report_is_per_full_length_run_and_amortized_per_step(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "job.log"
             log.write_text("\n".join(log_lines()) + "\n")
             rows = rust.report_rows(rust.parse_log(log), log)
         (row,) = rows
-        self.assertEqual((row["alg"], row["trials"], row["steps"]), ("bfs", 2, 7))
-        self.assertEqual(row["mean_roundtrips_per_step"], 4.0)
-        self.assertEqual(row["sd_roundtrips_per_step"], 1.0)
-        self.assertEqual(row["mean_tail_roundtrips"], 6.0)
+        self.assertEqual((row["alg"], row["trials"], row["attempts"], row["length"]), ("bfs", 2, 3, 4))
+        self.assertEqual(row["mean_roundtrips_per_trial"], 22.0)
+        self.assertAlmostEqual(row["sd_roundtrips_per_trial"], 8.0 ** 0.5)
+        self.assertEqual(row["mean_roundtrips_per_step"], 5.5)
+        self.assertAlmostEqual(row["sd_roundtrips_per_step"], 8.0 ** 0.5 / 4)
+        self.assertEqual(row["rejected_roundtrips"], 6)
         self.assertEqual(row["mean_ms_per_trial"], 2.0)
         self.assertIsNone(row["oram_levels"])  # not a recursive job
+
+    def test_failed_algorithms_get_a_row_without_costs(self) -> None:
+        lines = log_lines()[:3] + [
+            "algorithm alg=bfs status=failed trials=0 requested=2 attempts=1000 length=4 "
+            "allocations=0 reads=0 writes=0 nanos=0 mean_allocations=none var_allocations=none "
+            "mean_reads=none var_reads=none mean_writes=none var_writes=none "
+            "mean_roundtrips=none var_roundtrips=none rejected_allocations=5 rejected_roundtrips=90 "
+            "maximum_stash=none maximum_cached_values=none cache_cleared=0",
+            "done",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "job.log"
+            log.write_text("\n".join(lines) + "\n")
+            (row,) = rust.report_rows(rust.parse_log(log), log)
+            rows = rust.write_report(Path(directory), Path(directory) / "summary.csv")
+        self.assertEqual((row["status"], row["trials"], row["requested_trials"]), ("failed", 0, 2))
+        self.assertIsNone(row["mean_roundtrips_per_step"])
+        self.assertIsNone(row["oram_roundtrips_per_step"])
+        rust.print_report(rows)
+
+    def test_old_per_step_logs_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "old.log"
+            log.write_text("steps alg=bfs count=7 mean_roundtrips=4.0000\n")
+            with self.assertRaisesRegex(ValueError, "rerun"):
+                rust.parse_log(log)
 
     def test_recursive_jobs_report_the_oram_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -64,7 +92,8 @@ class RustLauncherTest(unittest.TestCase):
             structures = rust.structure_rows(rust.parse_log(log), log)
         # 5000 recursive allocations at bs=64: log_8(5000) - 4 < 1, so 1 level.
         self.assertEqual(row["oram_levels"], 1)
-        self.assertEqual(row["oram_roundtrips_per_step"], 4.0)
+        self.assertEqual(row["oram_roundtrips_per_trial"], 22.0)
+        self.assertEqual(row["oram_roundtrips_per_step"], 5.5)
         bfs = [record for record in structures if record["phase"] == "bfs"]
         self.assertEqual(bfs[0]["roundtrips_per_trial"], 22.0)
 

@@ -21,7 +21,7 @@ use crate::{
         RecursivePointer, ValueCodec,
     },
     structures::{AvlKey, AvlNode, Item, QueueEntry, StackEntry},
-    Address, OperationCounts, SamError,
+    Address, SamError,
 };
 use std::collections::BTreeSet;
 
@@ -198,6 +198,10 @@ pub struct Vertex<P> {
     pub fanout: usize,
     pub out_degree: u64,
     pub height: u64,
+    /// `visited` and `label` are not used by the algorithms (traversals keep
+    /// their visited set on the client). They are kept so records have the
+    /// Python layout (36 bytes of metadata), which decides the graph fanout
+    /// at each block size.
     pub visited: bool,
     pub label: Option<i64>,
 }
@@ -671,28 +675,6 @@ impl GraphInput {
             edges,
         }
     }
-}
-
-/// Kind of an algorithm step-boundary mark (see [`ObliviousGraph::step_marks`]).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StepKind {
-    /// One completed algorithm step ended here: a vertex visited (traversals),
-    /// a walk move (random walk, PageRank), one neighbor-list retrieval
-    /// (contact discovery), or the whole run (directed triangle count, which
-    /// has no natural step: one `Step` per trial).
-    Step,
-    /// The algorithm's main loop ended. Work since the last `Step` did not
-    /// complete a step (a traversal draining its frontier, a walk at a sink).
-    Tail,
-    /// Post-loop cleanup (resetting visited flags) ended here.
-    Cleanup,
-}
-
-/// SAM operation counts at one step boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StepMark {
-    pub kind: StepKind,
-    pub operations: OperationCounts,
 }
 
 fn check_children<P>(children: &[Option<P>], expected: usize) -> Result<(), SamError> {

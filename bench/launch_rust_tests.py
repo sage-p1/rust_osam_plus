@@ -10,15 +10,20 @@ eight algorithms in a row on it.
 
 Differences from the Python launcher:
 
-* Costs are reported **per algorithm step**, over completed steps only: a
-  vertex visited (bfs, dfs, dijkstra, prim), a walk move (rw, pr), or one
-  neighbor-list retrieval (cd). dtc has no natural step, so a dtc trial is
-  one step and its "per-step" cost is the whole run. A trial that stops early (a traversal
-  whose frontier empties before ``MAX_STEPS`` vertices, a walk at a sink)
-  contributes the steps it completed; its leftover work is reported
-  separately as the trial's *tail*, and resetting visited flags as *cleanup*.
-  So trials of different lengths are never mixed. Round trips are reads +
-  writes, as in ``parse_er_tests.py``.
+* Only **full-length runs** are measured: the binary redraws a trial's start
+  vertex until the run reaches the algorithm's full length (a traversal
+  visiting ``MAX_STEPS`` vertices, a walk of ``WALK_LENGTH`` moves without
+  hitting a sink, a dtc run whose every neighbor retrieval returned
+  ``MAX_NEIGHBORS`` entries); rejected runs are excluded from every statistic.
+  Costs are reported per run and, amortized, **per step**: the run's cost
+  divided by its nominal length (``MAX_STEPS`` visited vertices,
+  ``WALK_LENGTH`` moves for rw and pr, two neighbor-list retrievals for cd,
+  and one for dtc, which has no natural step). So the fixed costs of a run
+  (the start lookup, final deletions) are amortized over the same number of
+  steps in every trial. Each algorithm gets at most 1000 runs: ``status`` is
+  ``ok`` when all trials were found, ``short`` when fewer were, and
+  ``failed`` when no run was full length (no costs are reported then). Round
+  trips are reads + writes, as in ``parse_er_tests.py``.
 * Recursive-pointer jobs also report the Path ORAM baseline the Python
   parser plots: the round trips of the ORAM's structures (RecursivePointer
   and SmartQueue, as parse_er_tests.py) scaled by the position-map recursion
@@ -49,8 +54,7 @@ Differences from the Python launcher:
   G(n, d/n). Exact-generator jobs carry ``_gen-exact`` in their log names.
 
 Results: one record log per job in ``bench/results/rust-logs/``, plus
-``summary.csv`` (per job and algorithm), ``steps_by_index.csv`` (per step
-index) and ``structures.csv`` (round trips by structure) there. Regenerate
+``summary.csv`` (per job and algorithm) and ``structures.csv`` (round trips by structure) there. Regenerate
 them any time with ``--report-only``.
 
 Datasets (``--datasets NAME ...``): the ``scheduler.DATASETS`` edge lists
@@ -114,14 +118,16 @@ DAMPING_FACTOR = local.DAMPING_FACTOR
 SEED = 1
 
 TRIALS = 50
-# Algorithms whose trials can stop before their full length. Per-step
-# reporting already excludes incomplete work, so by default they run TRIALS
-# like the others; --early-trials can still give them more trials.
+# Algorithms whose runs can stop before their full length. The binary
+# rejection-samples full-length runs, so by default they run TRIALS like the
+# others; --early-trials can still give them a different count.
 EARLY_TERMINATING = ("rw", "bfs", "dfs", "dijkstra", "prim", "dtc")
 EARLY_TRIALS = TRIALS
-SUMMARY_FILES = ("summary.csv", "steps_by_index.csv", "structures.csv")
+SUMMARY_FILES = ("summary.csv", "structures.csv")
 # The ORAM baseline's structures, as in osam's parse_er_tests.py: the
-# recursive pointer store and the traversal queue it also backs.
+# recursive pointer store and the SAM queues it backs (dtc's neighbor queues;
+# traversal frontiers are client-side, and AVL lookups are not ORAM work,
+# since an ORAM addresses a vertex by its id directly).
 RECURSIVE_STRUCTURES = ("RecursivePointer", "SmartQueue")
 
 # The Python launcher's defaults are tuned for a ~500 GiB server. Rust jobs
@@ -650,8 +656,8 @@ def _value(text: str) -> Any:
 
 def parse_log(path: Path) -> dict[str, Any]:
     parsed: dict[str, Any] = {
-        "config": {}, "build": {}, "trials": {}, "algorithms": {}, "steps": {},
-        "stepindex": [], "structures": [], "done": False,
+        "config": {}, "build": {}, "trials": {}, "algorithms": {},
+        "structures": [], "done": False,
     }
     for line in path.read_text().splitlines():
         kind, _, rest = line.partition(" ")
@@ -663,10 +669,10 @@ def parse_log(path: Path) -> dict[str, Any]:
             parsed["trials"].setdefault(record["alg"], []).append(record)
         elif kind == "algorithm":
             parsed["algorithms"][record["alg"]] = record
-        elif kind == "steps":
-            parsed["steps"][record["alg"]] = record
-        elif kind == "stepindex":
-            parsed["stepindex"].append(record)
+        elif kind in ("steps", "stepindex"):
+            raise ValueError(
+                f"{path}: per-step log from an older binary (before full-length runs); rerun it"
+            )
         elif kind == "structure":
             parsed["structures"].append(record)
         elif kind == "done":
@@ -745,23 +751,27 @@ def report_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
         )
         levels = oram_recursion_levels(recursive_allocations, int(config["block_size"]))
     rows = []
-    for algorithm, steps in parsed["steps"].items():
+    for algorithm, summary in parsed["algorithms"].items():
         trials = parsed["trials"].get(algorithm, [])
         nanos = [trial["nanos"] for trial in trials if trial.get("nanos") is not None]
         stash = [trial["stash_peak"] for trial in trials if trial.get("stash_peak") is not None]
+        length = summary["length"]
         row = {
             **base,
             "alg": algorithm,
+            "status": summary.get("status", "ok"),
             "trials": len(trials),
-            "full_trials": sum(trial["full"] for trial in trials),
-            "steps": steps["count"],
-            "mean_steps_per_trial": steps.get("mean_steps_per_trial"),
+            "requested_trials": summary.get("requested"),
+            "attempts": summary["attempts"],
+            "length": length,
         }
         for metric in ("allocations", "reads", "writes", "roundtrips"):
-            row[f"mean_{metric}_per_step"] = steps.get(f"mean_{metric}")
-            row[f"sd_{metric}_per_step"] = _sd(steps.get(f"var_{metric}"))
-        row["mean_tail_roundtrips"] = steps.get("mean_tail_roundtrips")
-        row["mean_cleanup_roundtrips"] = steps.get("mean_cleanup_roundtrips")
+            mean, sd = summary.get(f"mean_{metric}"), _sd(summary.get(f"var_{metric}"))
+            row[f"mean_{metric}_per_trial"] = mean
+            row[f"sd_{metric}_per_trial"] = sd
+            row[f"mean_{metric}_per_step"] = mean / length if mean is not None else None
+            row[f"sd_{metric}_per_step"] = sd / length if sd is not None else None
+        row["rejected_roundtrips"] = summary.get("rejected_roundtrips")
         # ORAM baseline: the recursive structures' share of this algorithm's
         # round trips, scaled by the recursion depth (as parse_er_tests.py).
         phase = [record for record in parsed["structures"] if record["phase"] == algorithm]
@@ -769,37 +779,15 @@ def report_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
         recursive = sum(record["roundtrips"] for record in phase if record["name"] in RECURSIVE_STRUCTURES)
         share = recursive / total if total else None
         row["oram_levels"] = levels
-        if levels is not None and share is not None and row["mean_roundtrips_per_step"] is not None:
-            row["oram_roundtrips_per_step"] = row["mean_roundtrips_per_step"] * share * levels
-            sd = row["sd_roundtrips_per_step"]
-            row["oram_sd_roundtrips_per_step"] = sd * share * levels if sd is not None else None
-        else:
-            row["oram_roundtrips_per_step"] = row["oram_sd_roundtrips_per_step"] = None
+        for unit in ("trial", "step"):
+            mean, sd = row[f"mean_roundtrips_per_{unit}"], row[f"sd_roundtrips_per_{unit}"]
+            if levels is not None and share is not None and mean is not None:
+                row[f"oram_roundtrips_per_{unit}"] = mean * share * levels
+                row[f"oram_sd_roundtrips_per_{unit}"] = sd * share * levels if sd is not None else None
+            else:
+                row[f"oram_roundtrips_per_{unit}"] = row[f"oram_sd_roundtrips_per_{unit}"] = None
         row["mean_ms_per_trial"] = statistics.fmean(nanos) / 1e6 if nanos else None
         row["max_stash_peak"] = max(stash) if stash else None
-        row["log"] = log.name
-        rows.append(row)
-    return rows
-
-
-def step_index_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
-    config = parsed["config"]
-    rows = []
-    for record in parsed["stepindex"]:
-        row = {
-            "n": config.get("vertices"),
-            "bs": config.get("block_size"),
-            "pointer": config.get("pointer"),
-            "cache": config.get("cache"),
-            "mode": config.get("mode"),
-            "layout": config.get("layout", "exact"),
-            "alg": record["alg"],
-            "step": record["index"] + 1,
-            "count": record["count"],
-        }
-        for metric in ("allocations", "reads", "writes", "roundtrips"):
-            row[f"mean_{metric}"] = record.get(f"mean_{metric}")
-            row[f"sd_{metric}"] = _sd(record.get(f"var_{metric}"))
         row["log"] = log.name
         rows.append(row)
     return rows
@@ -835,20 +823,20 @@ def structure_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
 
 FIELDS = [
     "n", "edges", "bs", "pointer", "cache", "move", "mode", "pointer_bf", "graph_bf", "layout", "alg",
-    "trials", "full_trials", "steps", "mean_steps_per_trial",
+    "status", "trials", "requested_trials", "attempts", "length",
+    "mean_allocations_per_trial", "sd_allocations_per_trial",
+    "mean_reads_per_trial", "sd_reads_per_trial",
+    "mean_writes_per_trial", "sd_writes_per_trial",
+    "mean_roundtrips_per_trial", "sd_roundtrips_per_trial",
     "mean_allocations_per_step", "sd_allocations_per_step",
     "mean_reads_per_step", "sd_reads_per_step",
     "mean_writes_per_step", "sd_writes_per_step",
     "mean_roundtrips_per_step", "sd_roundtrips_per_step",
-    "mean_tail_roundtrips", "mean_cleanup_roundtrips",
-    "oram_levels", "oram_roundtrips_per_step", "oram_sd_roundtrips_per_step",
+    "rejected_roundtrips",
+    "oram_levels", "oram_roundtrips_per_trial", "oram_sd_roundtrips_per_trial",
+    "oram_roundtrips_per_step", "oram_sd_roundtrips_per_step",
     "mean_ms_per_trial", "max_stash_peak",
     "build_ms", "install_ms", "installation_max_stash", "complete_log", "log",
-]
-STEP_INDEX_FIELDS = [
-    "n", "bs", "pointer", "cache", "mode", "layout", "alg", "step", "count",
-    "mean_allocations", "sd_allocations", "mean_reads", "sd_reads",
-    "mean_writes", "sd_writes", "mean_roundtrips", "sd_roundtrips", "log",
 ]
 STRUCTURE_FIELDS = [
     "n", "bs", "pointer", "cache", "mode", "layout", "phase", "structure",
@@ -872,18 +860,12 @@ def _write_csv(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> Non
 
 
 def write_report(directory: Path = LOG_DIR, output: Path = SUMMARY_CSV) -> list[dict[str, Any]]:
-    rows, index_rows, structures = [], [], []
+    rows, structures = [], []
     for log in find_logs(directory):
         parsed = parse_log(log)
         rows.extend(report_rows(parsed, log))
-        index_rows.extend(step_index_rows(parsed, log))
         structures.extend(structure_rows(parsed, log))
     _write_csv(output, report_fields(FIELDS, OPTION_FIELDS, rows), rows)
-    _write_csv(
-        output.with_name("steps_by_index.csv"),
-        STEP_INDEX_FIELDS,
-        index_rows,
-    )
     _write_csv(
         output.with_name("structures.csv"),
         STRUCTURE_FIELDS,
@@ -903,8 +885,8 @@ def _fmt(value: Any, digits: int = 1) -> str:
 def print_report(rows: list[dict[str, Any]], limit: int | None = None) -> None:
     header = (
         f"{'n':>8} {'bs':>5} {'pointer':<15} {'cache':<5} {'mode':<7} {'b':>3} {'alg':<9}"
-        f"{'steps/trial':>11} {'rt/step':>9} {'±sd':>9} {'reads':>8} {'writes':>8} "
-        f"{'tail rt':>8} {'ORAM rt/step':>13} {'stash':>6}"
+        f"{'tries':>6} {'rt/trial':>10} {'rt/step':>9} {'±sd':>9} {'reads':>8} {'writes':>8} "
+        f"{'ORAM rt/step':>13} {'stash':>6}"
     )
     print(header)
     print("-" * len(header))
@@ -914,14 +896,17 @@ def print_report(rows: list[dict[str, Any]], limit: int | None = None) -> None:
             f"{row['pointer'] + ('*' if row.get('layout') == 'python-sized' else ''):<15} "
             f"{str(row['cache']).lower():<5} "
             f"{row['mode']:<7} {_fmt(row['pointer_bf']):>3} {row['alg']:<9}"
-            f"{_fmt(row['mean_steps_per_trial']):>11} {_fmt(row['mean_roundtrips_per_step']):>9} "
+            f"{_fmt(row['attempts']):>6} "
+            f"{('FAILED' if row['status'] == 'failed' else _fmt(row['mean_roundtrips_per_trial']) + ('!' if row['status'] == 'short' else '')):>10} "
+            f"{_fmt(row['mean_roundtrips_per_step']):>9} "
             f"{_fmt(row['sd_roundtrips_per_step']):>9} {_fmt(row['mean_reads_per_step']):>8} "
-            f"{_fmt(row['mean_writes_per_step']):>8} {_fmt(row['mean_tail_roundtrips']):>8} "
+            f"{_fmt(row['mean_writes_per_step']):>8} "
             f"{_fmt(row['oram_roundtrips_per_step']):>13} {_fmt(row['max_stash_peak']):>6}"
         )
     print(
-        "\nPer-step costs cover completed steps only; 'tail rt' is the mean per-trial work after "
-        "the last completed step. Round trips = reads + writes."
+        "\nFull-length runs only ('tries': start draws for all trials, at most 1000; FAILED: "
+        "no full-length run, !: fewer full-length runs than requested); per-step costs are per-run costs / "
+        "run length. Round trips = reads + writes."
     )
     if any(row.get("layout") == "python-sized" for row in rows):
         print(
@@ -1018,7 +1003,7 @@ def main() -> int:
     if args.report_only:
         rows = write_report(log_dir, summary_csv)
         print_report(rows)
-        print(f"\nWrote {len(rows)} row(s) to {summary_csv} (and steps_by_index.csv, structures.csv)")
+        print(f"\nWrote {len(rows)} row(s) to {summary_csv} (and structures.csv)")
         return 0
 
     binary = build_binary(NATIVE_BINARY)
@@ -1084,7 +1069,7 @@ def main() -> int:
     rows = write_report(log_dir, summary_csv)
     print()
     print_report(rows)
-    print(f"\nWrote {len(rows)} row(s) to {summary_csv} (and steps_by_index.csv, structures.csv)")
+    print(f"\nWrote {len(rows)} row(s) to {summary_csv} (and structures.csv)")
     return status
 
 

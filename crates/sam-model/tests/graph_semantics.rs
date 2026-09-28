@@ -578,26 +578,59 @@ fn priming_keeps_the_graph_intact() {
     primed(PointerKind::Original, OriginalPointers);
 }
 
+/// Traversals look up only their start vertex in the lookup trees and reach
+/// every other vertex by following edge pointers: a traversal costs the AVL
+/// trees exactly what one `get_pointer` costs, however many vertices it
+/// visits.
 #[test]
-fn dtc_marks_one_step_per_trial_covering_the_whole_run() {
-    use sam_model::StepKind;
-    let input = random_input(9, 40, FANOUT, 12);
+fn traversals_look_up_only_the_start_vertex() {
+    let input = random_input(5, 60, FANOUT, FANOUT * FANOUT + 5);
     let kind = PointerKind::MultiWrite;
     let mut backend = MultiWritePointers;
     let mut sam = sam_for::<_, MultiWritePointers>(kind);
     let mut graph =
         ObliviousGraph::build_static(&input, layout(kind), &mut backend, &mut sam).unwrap();
-    graph.step_marks = Some(Vec::new());
-    let before = sam.stats().operations;
-    graph
-        .directed_triangle_count(input.vertices[0], Some(5), &mut backend, &mut sam)
+    let avl = |sam: &DryRunSam<_>| {
+        sam.stats()
+            .by_structure
+            .get("SmartAVLTree")
+            .map_or(0, |stats| stats.reads + stats.writes)
+    };
+    let start = input.vertices[0];
+    let before = avl(&sam);
+    let (mut pointer, _) = graph
+        .get_pointer(start, &mut backend, &mut sam)
+        .unwrap()
         .unwrap();
-    let after = sam.stats().operations;
-    let marks = graph.step_marks.take().unwrap();
-    let kinds: Vec<_> = marks.iter().map(|mark| mark.kind).collect();
-    assert_eq!(kinds, vec![StepKind::Step, StepKind::Tail]);
-    // The single step ends where the run ends: it covers everything.
-    assert_eq!(marks[0].operations, after);
-    assert_eq!(marks[1].operations, after);
-    assert!(after.reads > before.reads);
+    let lookup = avl(&sam) - before;
+    backend.delete(&mut sam, &mut pointer).unwrap();
+    assert!(lookup > 0);
+    for order in 0..4 {
+        let before = avl(&sam);
+        let visited = match order {
+            0 => graph
+                .bfs(start, Some(20), &mut backend, &mut sam)
+                .unwrap()
+                .len(),
+            1 => graph
+                .dfs(start, Some(20), &mut backend, &mut sam)
+                .unwrap()
+                .len(),
+            2 => graph
+                .dijkstra(start, Some(20), &mut backend, &mut sam)
+                .unwrap()
+                .costs
+                .len(),
+            _ => {
+                graph
+                    .prim(start, Some(20), &mut backend, &mut sam)
+                    .unwrap()
+                    .edges
+                    .len()
+                    + 1
+            }
+        };
+        assert_eq!(visited, 20, "order {order}");
+        assert_eq!(avl(&sam) - before, lookup, "order {order}");
+    }
 }

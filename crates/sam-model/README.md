@@ -92,17 +92,29 @@ its structure lives in the SAM:
   pointer). `get_pointer(name)` returns a copy of the stored entry pointer;
   the stored pointer's refreshed state is written back with its AVL node
   (`SmartAvlTree::update_with`);
-- traversals follow pointers: scanning a vertex copies its leaves' edge
-  pointers, and visiting dereferences such a copy. BFS keeps its frontier in
-  a SAM queue, DFS in a SAM stack, and the vertices whose `visited` flag must
-  be reset in another SAM queue; every pointer copy is deleted before an
-  algorithm returns.
+- walks (rw, pr) and dtc follow pointers: a move copies the chosen leaf's
+  edge pointer and dereferences the copy (dtc queues its level-one and
+  level-two neighbors in SAM queues); every copy is deleted before an
+  algorithm returns;
+- traversals (bfs, dfs, dijkstra, prim) keep their frontier (FIFO queue,
+  LIFO stack, or priority queue) and visited set on the client and follow
+  pointers lazily. Visiting a vertex dereferences its pointer and scans its
+  fan-out tree for destination ids; each new destination becomes a frontier
+  entry naming the visited vertex and the edge index, with no copy. The
+  client holds the pointer of each visited vertex while it has entries in
+  the frontier. Popping an entry for an unvisited vertex reopens its source,
+  copies that one edge pointer and follows it; entries for vertices already
+  visited, and entries left in the frontier at the end, cost nothing in SAM.
+  Only the start vertex is looked up in the trees (once per run), no visited
+  flags are written, and every held pointer is deleted before returning.
+  (Vertex records keep the Python layout's `visited` and `label` fields,
+  unused, so the graph fanout at each block size is unchanged.)
 
-The client keeps O(1) state: both AVL roots, the next vertex id, the vertex
-count, the number of possibly referenced tombstones, and the layout, plus
-algorithm outputs. As in the reference design, the priority queue of
-Dijkstra and Prim is client-side (entries `(key, vertex id, parent id,
-pointer)`).
+Between operations the client keeps O(1) state: both AVL roots, the next
+vertex id, the vertex count, the number of possibly referenced tombstones,
+and the layout. A running traversal also holds its frontier, visited set and
+the pointers of visited vertices that still have frontier entries, which
+grow with the frontier.
 
 Operations: `build_static` (bulk: one `copy_many` per destination, trees
 built bottom-up, AVL trees built balanced) produces exactly the graph that
@@ -163,25 +175,33 @@ Output is line-oriented `key=value` records: one `config` (with
 a `prime` record with `--prime` (`walks allocations reads writes nanos`), a
 `dynamic` record with `--dynamic-ops` (`ops add_vertex add_edge delete_edge
 delete_vertex allocations reads writes nanos tombstones`), a `trial` record
-per trial (SAM operation deltas, wall time, stash peak, and `full=1` when
-the trial ran to the algorithm's full length rather than stopping early), an
-`algorithm` summary per algorithm, and a final `done`.
+per accepted trial (start vertex, draws, SAM operation deltas, wall time,
+stash peak), an `algorithm` summary per algorithm, and a final `done`.
 With `--output FILE` the records go to `FILE.partial`, renamed to `FILE` only
 on success.
 
-Algorithms mark their step boundaries (`ObliviousGraph::step_marks`): a
-vertex visited (bfs, dfs, dijkstra, prim), a walk move (rw, pr), or a
-neighbor-list retrieval (cd). dtc has no natural step, so each trial is one
-step and its per-step cost is the whole run. The benchmark reports per-step means and
-variances of allocations, reads, writes and round trips (reads + writes, as in
-the Python parser) over completed steps only (`steps`, and per step index in
-`stepindex`); a trial's work after its last completed step (`tail_*`) and its
-cleanup (deleting the remaining frontier and resetting visited flags,
-`cleanup_*`) are reported separately. `structure` records give
-per-structure counts for the build, `prime`, `dynamic` and each algorithm,
-from which the launcher computes round trips by structure and, for the
-recursive pointer, the Python parser's Path ORAM baseline (round trips times
-the position-map recursion depth).
+Only full-length runs are measured. A run is full length when a traversal
+visits `--max-steps` vertices, a walk makes `--wl` moves without reaching a
+sink, and every dtc neighbor retrieval returns `--max-neighbors` entries (cd
+and pr always are). Start vertices are redrawn until the requested number
+of runs are full length (rejection sampling), with at most 1000 runs per
+algorithm. The `algorithm` record's `status` is `ok` when every requested
+trial was found, `short` when fewer were, and `failed` when no run was full
+length (then it carries no statistics); the benchmark then moves on to the
+next algorithm. A short run from a fixed `--start` fails the algorithm at
+once (except rw, whose moves are random). Rejected runs still execute on the SAM
+but are excluded from every statistic; their total is reported as
+`rejected_*`. The `algorithm` record gives the per-run means and variances of
+allocations, reads, writes and round trips (reads + writes, as in the Python
+parser) and the run `length`: visited vertices (bfs, dfs, dijkstra, prim),
+walk moves (rw, pr), 2 neighbor-list retrievals (cd), or 1 (dtc, which has
+no natural step). Per-step costs are per-run costs divided by `length`, so a
+run's fixed costs (the start lookup, final deletions) are amortized over the
+same number of steps in every trial. `structure` records give
+per-structure counts for the build, `prime`, `dynamic` and each algorithm
+(accepted runs only), from which the launcher computes round trips by
+structure and, for the recursive pointer, the Python parser's Path ORAM
+baseline (round trips times the position-map recursion depth).
 
 Everything that runs these benchmarks and parses their output is in
 `rust_osam_plus/bench/` (see its README); nothing is imported from the Python

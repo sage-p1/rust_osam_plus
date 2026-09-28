@@ -10,21 +10,25 @@
 //! build allocations=.. reads=.. writes=.. nanos=.. install_nanos=.. installation_maximum_stash=..
 //! prime walks=.. allocations=.. reads=.. writes=.. nanos=..            (with --prime)
 //! dynamic ops=.. add_vertex=.. add_edge=.. delete_edge=.. delete_vertex=.. allocations=.. reads=.. writes=.. nanos=.. tombstones=..   (with --dynamic-ops N)
-//! trial alg=bfs index=0 allocations=.. reads=.. writes=.. nanos=.. size=.. full=1 cost=none stash_peak=none
-//! trial alg=bfs index=0 ... steps=.. tail_reads=.. tail_writes=.. cleanup_reads=.. cleanup_writes=..
-//! algorithm alg=bfs trials=50 full_trials=.. allocations=.. reads=.. writes=.. nanos=.. maximum_stash=.. maximum_cached_values=..
-//! steps alg=bfs count=.. mean_steps_per_trial=.. mean_reads=.. var_reads=.. ... mean_roundtrips=.. var_roundtrips=..
-//! stepindex alg=bfs index=0 count=.. mean_reads=.. var_reads=.. ...
+//! trial alg=bfs index=0 start=.. attempts=.. allocations=.. reads=.. writes=.. roundtrips=.. nanos=.. size=.. cost=none stash_peak=none
+//! algorithm alg=bfs status=ok trials=50 requested=50 attempts=.. length=100 allocations=.. reads=.. writes=.. nanos=.. mean_allocations=.. var_allocations=.. ... mean_roundtrips=.. var_roundtrips=.. rejected_allocations=.. rejected_roundtrips=.. maximum_stash=.. maximum_cached_values=.. cache_cleared=..
 //! structure phase=bfs name=RaryMultiWritePointer allocations=.. reads=.. writes=.. roundtrips=..
 //!           (phases: build, prime, dynamic, then one per algorithm)
 //! done
 //! ```
 //!
-//! `full=1` means the trial ran to the algorithm's full length rather than
-//! terminating early (see `run_one`). Per-step statistics (`steps`,
-//! `stepindex`, and `step` with `--step-records`) cover completed steps only
-//! (see `sam_model::StepKind`): a trial's incomplete tail and its cleanup are
-//! reported separately, so trials of different lengths are never mixed.
+//! Only full-length runs are measured (see `run_one` for what full length
+//! means per algorithm): start vertices are drawn until `requested` runs are
+//! full length, at most 1000 runs per algorithm (rejection sampling;
+//! `attempts` counts the draws). `status` is `ok` when every requested trial
+//! was found, `short` when fewer were, and `failed` when none was (then the
+//! record has no statistics and no `structure` records follow). So every trial
+//! does the same amount of work and the run's fixed costs (the start
+//! lookup, final deletions) are amortized over `length` steps. Rejected runs
+//! still happen on the SAM but are excluded from every statistic, including
+//! the per-algorithm `structure` records; their total is reported as
+//! `rejected_*`. `mean_*` / `var_*` are per-run moments; per-step costs are
+//! them divided by `length`.
 //! Round trips are reads + writes, as in the Python parser.
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -38,7 +42,7 @@ use sam_model::{
     BlockCodec, CachedGraphPointerCodec, DryRunSam, GraphBackend, GraphInput, GraphLayout,
     GraphObject, GraphValueCodec, MultiWriteGraphPointerCodec, NoMovePointers, ObliviousGraph,
     OperationCounts, OriginalGraphPointerCodec, PathOsamSam, RaryGraphPointerCodec,
-    RecursiveGraphPointerCodec, SamError, SingleAccessMachine, StepKind, StructureStats, Tagged,
+    RecursiveGraphPointerCodec, SamError, SingleAccessMachine, StructureStats, Tagged,
     TaggedGraphPointerCodec, WeightedEdge,
 };
 use std::{
@@ -55,6 +59,10 @@ use std::{
 type BenchResult<T> = Result<T, Box<dyn Error>>;
 
 /// Algorithms accepted by `--alg`; `build` only constructs the graph.
+/// Runs allowed per algorithm while looking for full-length runs. An
+/// algorithm with no full-length run among them is reported as failed.
+const MAX_ATTEMPTS: usize = 1000;
+
 const ALGORITHMS: [&str; 9] = [
     "build", "rw", "bfs", "dfs", "dijkstra", "prim", "cd", "dtc", "pr",
 ];
@@ -84,8 +92,6 @@ struct Config {
     /// Dry-run only: model `original` records that do not fit the block using
     /// Python's fanout instead of failing.
     pretend_original_fits: bool,
-    /// Also write one `step` record per completed step.
-    step_records: bool,
     /// Build with one bulk pass (`static`) or add_vertex/add_edge calls.
     dynamic_build: bool,
     /// Run the priming walks after the build.
@@ -724,18 +730,18 @@ impl Moments {
     }
 }
 
-/// Per-step moments of allocations, reads, writes and round trips.
+/// Per-run moments of allocations, reads, writes and round trips.
 ///
 /// Round trips follow the Python parser's definition: reads + writes.
 #[derive(Clone, Copy, Debug, Default)]
-struct StepMoments {
+struct RunMoments {
     allocations: Moments,
     reads: Moments,
     writes: Moments,
     roundtrips: Moments,
 }
 
-impl StepMoments {
+impl RunMoments {
     fn push(&mut self, step: OperationCounts) {
         self.allocations.push(step.allocations as f64);
         self.reads.push(step.reads as f64);
@@ -762,39 +768,20 @@ impl StepMoments {
     }
 }
 
+fn add(total: OperationCounts, run: OperationCounts) -> OperationCounts {
+    OperationCounts {
+        allocations: total.allocations + run.allocations,
+        reads: total.reads + run.reads,
+        writes: total.writes + run.writes,
+    }
+}
+
 fn delta(after: OperationCounts, before: OperationCounts) -> OperationCounts {
     OperationCounts {
         allocations: after.allocations - before.allocations,
         reads: after.reads - before.reads,
         writes: after.writes - before.writes,
     }
-}
-
-/// Splits one trial's step marks into completed steps, the incomplete tail
-/// after the last completed step, and post-loop cleanup.
-fn split_steps(
-    before: OperationCounts,
-    after: OperationCounts,
-    marks: &[sam_model::StepMark],
-) -> (Vec<OperationCounts>, OperationCounts, OperationCounts) {
-    let mut steps = Vec::new();
-    let mut previous = before;
-    let mut tail_end = None;
-    let mut cleanup_end = None;
-    for mark in marks {
-        match mark.kind {
-            StepKind::Step => {
-                steps.push(delta(mark.operations, previous));
-                previous = mark.operations;
-            }
-            StepKind::Tail => tail_end = Some(mark.operations),
-            StepKind::Cleanup => cleanup_end = Some(mark.operations),
-        }
-    }
-    let tail_end = tail_end.unwrap_or(after);
-    let tail = delta(tail_end, previous);
-    let cleanup = delta(cleanup_end.unwrap_or(tail_end), tail_end);
-    (steps, tail, cleanup)
 }
 
 fn write_structures(
@@ -943,8 +930,6 @@ where
             return Err(format!("start vertex {start} is not in the graph").into());
         }
     }
-    graph.step_marks = Some(Vec::new());
-
     for (algorithm, trials) in &config.algorithms {
         if algorithm == "build" {
             continue;
@@ -955,25 +940,30 @@ where
         // Each algorithm gets the same seeded start-vertex sequence, so the
         // first N trials of a longer run use the starts of an N-trial run.
         let mut rng = rand::rngs::StdRng::seed_from_u64(config.seed);
-        let algorithm_before = sam.stats().operations;
-        let structures_before = sam.stats().by_structure.clone();
-        let algorithm_clock = Instant::now();
-        let mut full_trials = 0;
-        let mut step_moments = StepMoments::default();
-        let mut step_index_moments: Vec<StepMoments> = Vec::new();
-        let mut steps_per_trial = Moments::default();
-        let mut tail_roundtrips = Moments::default();
-        let mut cleanup_roundtrips = Moments::default();
+        let length = run_length(config, algorithm);
+        let mut attempts = 0;
+        let mut accepted_trials = 0;
+        let mut moments = RunMoments::default();
+        let mut accepted = OperationCounts::default();
+        let mut rejected = OperationCounts::default();
+        let mut structures: BTreeMap<&'static str, StructureStats> = BTreeMap::new();
+        let mut nanos_total = 0;
         let mut maximum_stash: Option<u64> = None;
-        for index in 0..*trials {
+        // Rejection sampling: only full-length runs are measured, so a run's
+        // fixed costs (the start lookup, final deletions) are amortized over
+        // the same number of steps in every trial. At most MAX_ATTEMPTS runs
+        // per algorithm; a fixed start gives the same run every time except
+        // for the random walk, so a short run from it ends the search.
+        let mut trial_attempts = 0;
+        while accepted_trials < *trials && attempts < MAX_ATTEMPTS {
+            attempts += 1;
+            trial_attempts += 1;
             let start = config
                 .start
                 .unwrap_or_else(|| workload.random_vertex(&mut rng));
             sam.reset_stash_maximum();
             let before = sam.stats().operations;
-            if let Some(marks) = graph.step_marks.as_mut() {
-                marks.clear();
-            }
+            let structures_before = sam.stats().by_structure.clone();
             let clock = Instant::now();
             let outcome = run_one(
                 config,
@@ -986,96 +976,93 @@ where
                 sam,
             )?;
             let nanos = clock.elapsed().as_nanos();
-            let after = sam.stats().operations;
+            let run = delta(sam.stats().operations, before);
+            if !outcome.full {
+                rejected = add(rejected, run);
+                if config.start.is_some() && algorithm != "rw" {
+                    break;
+                }
+                continue;
+            }
+            accepted = add(accepted, run);
+            moments.push(run);
+            nanos_total += nanos;
+            for (name, stats) in &sam.stats().by_structure {
+                let base = structures_before.get(name).copied().unwrap_or_default();
+                let total = structures.entry(name).or_default();
+                total.allocations += stats.allocations - base.allocations;
+                total.reads += stats.reads - base.reads;
+                total.writes += stats.writes - base.writes;
+            }
             let stash_peak = sam.stats().stash.map(|stash| stash.maximum);
             if let Some(peak) = stash_peak {
                 maximum_stash = Some(maximum_stash.map_or(peak, |maximum| maximum.max(peak)));
             }
-            full_trials += usize::from(outcome.full);
-            let (steps, tail, cleanup) =
-                split_steps(before, after, graph.step_marks.as_deref().unwrap_or(&[]));
-            for (step_index, step) in steps.iter().enumerate() {
-                step_moments.push(*step);
-                if step_index_moments.len() <= step_index {
-                    step_index_moments.push(StepMoments::default());
-                }
-                step_index_moments[step_index].push(*step);
-                if config.step_records {
-                    writeln!(
-                        out,
-                        "step alg={algorithm} trial={index} index={step_index} allocations={} \
-                         reads={} writes={} roundtrips={}",
-                        step.allocations,
-                        step.reads,
-                        step.writes,
-                        step.reads + step.writes,
-                    )?;
-                }
-            }
-            steps_per_trial.push(steps.len() as f64);
-            tail_roundtrips.push((tail.reads + tail.writes) as f64);
-            cleanup_roundtrips.push((cleanup.reads + cleanup.writes) as f64);
             writeln!(
                 out,
-                "trial alg={algorithm} index={index} allocations={} reads={} writes={} \
-                 nanos={nanos} size={} full={} cost={} stash_peak={} steps={} \
-                 tail_reads={} tail_writes={} cleanup_reads={} cleanup_writes={}",
-                after.allocations - before.allocations,
-                after.reads - before.reads,
-                after.writes - before.writes,
+                "trial alg={algorithm} index={accepted_trials} start={start} \
+                 attempts={trial_attempts} allocations={} reads={} writes={} roundtrips={} \
+                 nanos={nanos} size={} cost={} stash_peak={}",
+                run.allocations,
+                run.reads,
+                run.writes,
+                run.reads + run.writes,
                 outcome.size,
-                u8::from(outcome.full),
                 opt(outcome.cost),
                 opt(stash_peak),
-                steps.len(),
-                tail.reads,
-                tail.writes,
-                cleanup.reads,
-                cleanup.writes,
             )?;
+            accepted_trials += 1;
+            trial_attempts = 0;
         }
-        let after = sam.stats().operations;
+        // `ok`: every requested trial is a full-length run; `short`: some
+        // were found, but fewer than requested; `failed`: none.
+        let status = if accepted_trials == *trials {
+            "ok"
+        } else if accepted_trials > 0 {
+            "short"
+        } else {
+            "failed"
+        };
+        if status != "ok" {
+            eprintln!(
+                "warning: {algorithm} {status}: {accepted_trials} of {trials} runs were full \
+                 length after {attempts} attempts"
+            );
+        }
+        // Whole-run statistics over the accepted (full-length) runs; per-step
+        // costs are these divided by `length`.
         writeln!(
             out,
-            "algorithm alg={algorithm} trials={trials} full_trials={full_trials} allocations={} \
-             reads={} writes={} nanos={} maximum_stash={} maximum_cached_values={} \
-             cache_cleared={cache_cleared}",
-            after.allocations - algorithm_before.allocations,
-            after.reads - algorithm_before.reads,
-            after.writes - algorithm_before.writes,
-            algorithm_clock.elapsed().as_nanos(),
+            "algorithm alg={algorithm} status={status} trials={accepted_trials} \
+             requested={trials} attempts={attempts} length={length} \
+             allocations={} reads={} writes={} nanos={nanos_total} {} \
+             rejected_allocations={} rejected_roundtrips={} maximum_stash={} \
+             maximum_cached_values={} cache_cleared={cache_cleared}",
+            accepted.allocations,
+            accepted.reads,
+            accepted.writes,
+            moments.fields(),
+            rejected.allocations,
+            rejected.reads + rejected.writes,
             opt(maximum_stash),
             opt(backend.max_cached_values()),
         )?;
-        // Per-step statistics over completed steps only: trials that stop
-        // early contribute the steps they completed, never partial work.
-        writeln!(
-            out,
-            "steps alg={algorithm} count={} mean_steps_per_trial={} {} \
-             mean_tail_roundtrips={} mean_cleanup_roundtrips={}",
-            step_moments.roundtrips.count,
-            opt(steps_per_trial.mean().map(|value| format!("{value:.4}"))),
-            step_moments.fields(),
-            opt(tail_roundtrips.mean().map(|value| format!("{value:.4}"))),
-            opt(cleanup_roundtrips.mean().map(|value| format!("{value:.4}"))),
-        )?;
-        for (step_index, moments) in step_index_moments.iter().enumerate() {
-            writeln!(
-                out,
-                "stepindex alg={algorithm} index={step_index} count={} {}",
-                moments.roundtrips.count,
-                moments.fields(),
-            )?;
-        }
-        write_structures(
-            out,
-            algorithm,
-            &sam.stats().by_structure,
-            &structures_before,
-        )?;
+        write_structures(out, algorithm, &structures, &BTreeMap::new())?;
         out.flush()?;
     }
     Ok(())
+}
+
+/// Nominal length of a full run, the unit of per-step costs: walk moves (rw,
+/// pr), visited vertices (bfs, dfs, dijkstra, prim), neighbor-list
+/// retrievals (cd: two), or the whole run (dtc, which has no natural step).
+fn run_length(config: &Config, algorithm: &str) -> usize {
+    match algorithm {
+        "rw" | "pr" => config.walk_length,
+        "bfs" | "dfs" | "dijkstra" | "prim" => config.max_steps,
+        "cd" => 2,
+        _ => 1,
+    }
 }
 
 /// Runs one trial and decides whether it ran to full length:
@@ -1216,13 +1203,17 @@ oblivious_graph_bench --graph FILE --bs BYTES --pt POINTER [options]
   --alg LIST          comma-separated ALG[:TRIALS]; may be repeated. ALG is one of
                       build rw bfs dfs dijkstra prim cd dtc pr. The graph is built
                       once and the algorithms run in order. Default: rw
-  --trials N          trials for entries without an explicit :TRIALS (default 1)
+  --trials N          trials for entries without an explicit :TRIALS (default 1).
+                      Only full-length runs count: start vertices are redrawn until
+                      N runs are full length, at most 1000 runs per algorithm; an
+                      algorithm with none is reported as status=failed
   --wl N              walk length for rw and pr (default 50)
   --max-steps N       visited-vertex cap for bfs/dfs/dijkstra/prim (default 100)
   --max-neighbors N   per-level neighbor cap for dtc (default 5)
   --df X              PageRank damping factor (default 0.9)
   --seed N            RNG seed (default 1)
-  --start ID          fixed start vertex instead of random starts
+  --start ID          fixed start vertex instead of random starts (a short run
+                      from it fails the algorithm, except rw, which is retried)
   --pointer-branching-factor N   r-ary pointer fanout (even, >= 2)
   --cache | --move    enable / disable the client pointer cache (default --move).
                       Accesses always move (read, work on, and write each object
@@ -1234,7 +1225,6 @@ oblivious_graph_bench --graph FILE --bs BYTES --pt POINTER [options]
   --pretend-original-fits   dry-run only: if `original` records cannot fit the block,
                       use Python's edge fanout (bs - 16) / 8 instead of failing;
                       the config record then reports layout=python-sized
-  --step-records      also write one `step` record per completed algorithm step
   --build static|dynamic   build in one bulk pass (default) or by add_vertex/add_edge
                       calls in input order; both give the same graph
   --prime             after the build, run vertices/10 random walks of 50 steps
@@ -1258,6 +1248,10 @@ fn canonical_algorithm(name: &str) -> String {
 }
 
 fn parse_args() -> BenchResult<Config> {
+    parse_arg_list(env::args().skip(1))
+}
+
+fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config> {
     let mut graph = None;
     let mut block_size = None;
     let mut pointer = None;
@@ -1277,13 +1271,12 @@ fn parse_args() -> BenchResult<Config> {
     let mut output = None;
     let mut check_sam_policy = false;
     let mut pretend_original_fits = false;
-    let mut step_records = false;
     let mut dynamic_build = false;
     let mut prime = false;
     let mut dynamic_ops = 0;
-    let mut args = env::args().skip(1);
+    let mut args = args.into_iter().collect::<Vec<_>>().into_iter();
     while let Some(argument) = args.next() {
-        let value = |args: &mut std::iter::Skip<std::env::Args>| {
+        let value = |args: &mut std::vec::IntoIter<String>| {
             args.next()
                 .ok_or_else(|| format!("missing value after {argument}"))
         };
@@ -1326,7 +1319,6 @@ fn parse_args() -> BenchResult<Config> {
             "--output" => output = Some(value(&mut args)?),
             "--check-sam-policy" => check_sam_policy = true,
             "--pretend-original-fits" => pretend_original_fits = true,
-            "--step-records" => step_records = true,
             "--help" | "-h" => {
                 println!("{HELP}");
                 process::exit(0);
@@ -1392,7 +1384,6 @@ fn parse_args() -> BenchResult<Config> {
         stash_size,
         check_sam_policy,
         pretend_original_fits,
-        step_records,
         dynamic_build,
         prime,
         dynamic_ops,
@@ -1403,63 +1394,200 @@ fn parse_args() -> BenchResult<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sam_model::{pointer::MultiWriteCell, AccessPolicy, StepMark};
 
-    fn ops(reads: u64) -> OperationCounts {
-        OperationCounts {
-            allocations: 0,
-            reads,
-            writes: 0,
+    /// Runs the benchmark on `edges` with `args` and returns its records.
+    fn bench(edges: &str, args: &[&str]) -> BenchResult<Vec<String>> {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = env::temp_dir().join(format!(
+            "oblivious_graph_bench_test_{}_{}.edgelist",
+            process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::write(&path, edges)?;
+        let mut list = vec!["--graph".to_string(), path.display().to_string()];
+        list.extend(args.iter().map(|arg| arg.to_string()));
+        let config = parse_arg_list(list)?;
+        let input = read_graph(&config.graph)?;
+        let mut out = Vec::new();
+        let result = run_with_output(&config, &input, &mut out);
+        fs::remove_file(&path)?;
+        result?;
+        Ok(String::from_utf8(out)?
+            .lines()
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn field<'a>(record: &'a str, key: &str) -> &'a str {
+        record
+            .split_whitespace()
+            .find_map(|token| token.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("{record} has no {key}"))
+    }
+
+    /// A directed 6-cycle (every start reaches all six vertices) plus a
+    /// separate 2-cycle (a start there reaches only two).
+    const TWO_COMPONENTS: &str = "0 1\n1 2\n2 3\n3 4\n4 5\n5 0\n6 7\n7 6\n";
+
+    #[test]
+    fn only_full_length_runs_are_measured() {
+        let records = bench(
+            TWO_COMPONENTS,
+            &[
+                "--bs",
+                "4096",
+                "--pt",
+                "multiwrite",
+                "--alg",
+                "bfs,dijkstra,rw",
+                "--trials",
+                "20",
+                "--max-steps",
+                "4",
+                "--wl",
+                "5",
+            ],
+        )
+        .unwrap();
+        for algorithm in ["bfs", "dijkstra"] {
+            let trials: Vec<_> = records
+                .iter()
+                .filter(|record| record.starts_with(&format!("trial alg={algorithm} ")))
+                .collect();
+            assert_eq!(trials.len(), 20);
+            for trial in &trials {
+                assert_eq!(field(trial, "size"), "4");
+                assert!(field(trial, "start").parse::<u64>().unwrap() < 6);
+            }
+            let summary = records
+                .iter()
+                .find(|record| record.starts_with(&format!("algorithm alg={algorithm} ")))
+                .unwrap();
+            assert_eq!(field(summary, "status"), "ok");
+            let attempts: usize = field(summary, "attempts").parse().unwrap();
+            // A quarter of the starts are in the 2-cycle: some were rejected.
+            assert!(attempts > 20, "{summary}");
+            assert_eq!(field(summary, "length"), "4");
+            assert!(
+                field(summary, "rejected_roundtrips")
+                    .parse::<u64>()
+                    .unwrap()
+                    > 0
+            );
+            let reads: f64 = field(summary, "reads").parse().unwrap();
+            let mean: f64 = field(summary, "mean_reads").parse().unwrap();
+            assert!((reads / 20.0 - mean).abs() < 1e-6);
         }
+        // The graph has no sinks: every walk is full length.
+        let summary = records
+            .iter()
+            .find(|record| record.starts_with("algorithm alg=rw "))
+            .unwrap();
+        assert_eq!(field(summary, "attempts"), "20");
     }
 
     #[test]
-    fn split_steps_separates_completed_steps_tail_and_cleanup() {
-        let mark = |kind, reads| StepMark {
-            kind,
-            operations: ops(reads),
-        };
-        let marks = [
-            mark(StepKind::Step, 13),
-            mark(StepKind::Step, 20),
-            mark(StepKind::Tail, 26),
-            mark(StepKind::Cleanup, 30),
-        ];
-        let (steps, tail, cleanup) = split_steps(ops(10), ops(30), &marks);
-        assert_eq!(steps, vec![ops(3), ops(7)]);
-        assert_eq!((tail, cleanup), (ops(6), ops(4)));
+    fn a_fixed_short_start_fails_the_algorithm_after_one_run() {
+        let records = bench(
+            TWO_COMPONENTS,
+            &[
+                "--bs",
+                "4096",
+                "--pt",
+                "recursive",
+                "--alg",
+                "bfs,cd",
+                "--max-steps",
+                "4",
+                "--start",
+                "6",
+                "--trials",
+                "3",
+            ],
+        )
+        .unwrap();
+        let bfs = records
+            .iter()
+            .find(|r| r.starts_with("algorithm alg=bfs "))
+            .unwrap();
+        assert_eq!(field(bfs, "status"), "failed");
+        assert_eq!(field(bfs, "attempts"), "1");
+        assert_eq!(field(bfs, "trials"), "0");
+        assert_eq!(field(bfs, "mean_roundtrips"), "none");
+        assert!(!records
+            .iter()
+            .any(|r| r.starts_with("structure phase=bfs ")));
+        // The next algorithm still runs.
+        let cd = records
+            .iter()
+            .find(|r| r.starts_with("algorithm alg=cd "))
+            .unwrap();
+        assert_eq!(field(cd, "status"), "ok");
     }
 
     #[test]
-    fn bfs_marks_one_step_per_visited_vertex() {
-        let input = GraphInput::new(
-            0..6,
-            (0..6)
-                .flat_map(|v| {
-                    [(v + 1) % 6, (v + 2) % 6].map(|w| WeightedEdge {
-                        source: v,
-                        destination: w,
-                        weight: 1,
-                    })
-                })
-                .collect(),
-        );
-        let layout = GraphLayout::for_pointer_kind(4096, PointerKind::MultiWrite).unwrap();
-        let mut backend = MultiWritePointers;
-        let mut sam = DryRunSam::<MultiWriteCell<GraphObject<MultiWritePointer>>>::new(
-            AccessPolicy::MULTI_WRITE,
-        );
-        let mut graph =
-            ObliviousGraph::build_static(&input, layout, &mut backend, &mut sam).unwrap();
-        graph.step_marks = Some(Vec::new());
-        let before = sam.stats().operations;
-        let path = graph.bfs(0, Some(4), &mut backend, &mut sam).unwrap();
-        let after = sam.stats().operations;
-        let (steps, _, cleanup) = split_steps(before, after, graph.step_marks.as_ref().unwrap());
-        assert_eq!(steps.len(), path.len());
-        assert_eq!(path.len(), 4);
-        assert!(cleanup.reads > 0);
-        let total: u64 = steps.iter().map(|step| step.reads).sum();
-        assert!(total <= after.reads - before.reads);
+    fn an_algorithm_without_full_runs_fails_after_the_attempt_cap() {
+        let records = bench(
+            TWO_COMPONENTS,
+            &[
+                "--bs",
+                "4096",
+                "--pt",
+                "recursive",
+                "--alg",
+                "bfs,rw",
+                "--max-steps",
+                "7",
+                "--trials",
+                "2",
+                "--wl",
+                "3",
+            ],
+        )
+        .unwrap();
+        let bfs = records
+            .iter()
+            .find(|r| r.starts_with("algorithm alg=bfs "))
+            .unwrap();
+        assert_eq!(field(bfs, "status"), "failed");
+        assert_eq!(field(bfs, "attempts"), MAX_ATTEMPTS.to_string());
+        assert_eq!(field(bfs, "requested"), "2");
+        assert!(!records.iter().any(|r| r.starts_with("trial alg=bfs ")));
+        let rw = records
+            .iter()
+            .find(|r| r.starts_with("algorithm alg=rw "))
+            .unwrap();
+        assert_eq!(field(rw, "status"), "ok");
+        assert_eq!(records.last().unwrap(), "done");
+    }
+
+    #[test]
+    fn too_few_full_runs_are_reported_short() {
+        // Only starts in the 6-cycle (3/4 of the draws) give full runs, so
+        // 1000 draws find fewer than 900.
+        let records = bench(
+            TWO_COMPONENTS,
+            &[
+                "--bs",
+                "4096",
+                "--pt",
+                "recursive",
+                "--alg",
+                "bfs",
+                "--max-steps",
+                "6",
+                "--trials",
+                "900",
+            ],
+        )
+        .unwrap();
+        let bfs = records
+            .iter()
+            .find(|r| r.starts_with("algorithm alg=bfs "))
+            .unwrap();
+        assert_eq!(field(bfs, "status"), "short", "{bfs}");
+        assert_eq!(field(bfs, "attempts"), MAX_ATTEMPTS.to_string());
+        let trials: usize = field(bfs, "trials").parse().unwrap();
+        assert!(trials > 0 && trials < 900);
     }
 }

@@ -1,21 +1,14 @@
 //! The graph handle, vertex lookup, construction and dynamic updates.
 
-use super::tree::{self, Neighbor, NeighborSink};
-use super::{
-    DeletedObject, FanOut, GraphBackend, GraphInput, GraphLayout, GraphObject, StepKind, StepMark,
-    Vertex,
-};
+use super::tree::{self, NeighborSink};
+use super::{DeletedObject, FanOut, GraphBackend, GraphInput, GraphLayout, GraphObject, Vertex};
 use crate::{
     structures::{avl::SmartAvlTree, queue::SmartQueue, Item},
-    MemoryClass, OperationCounts, SamError, SingleAccessMachine,
+    MemoryClass, SamError, SingleAccessMachine,
 };
 use std::marker::PhantomData;
 
 type Result<T> = std::result::Result<T, SamError>;
-
-/// Callback receiving `(visited vertex id, neighbor)` pairs.
-pub(super) type VisitSink<'a, P, B, S> =
-    dyn FnMut(u64, Neighbor<P>, &mut B, &mut S) -> Result<()> + 'a;
 
 /// Length of each priming walk (see [`ObliviousGraph::prime`]).
 pub const PRIME_WALK_LENGTH: usize = 50;
@@ -32,22 +25,20 @@ pub const PRIME_WALK_LENGTH: usize = 50;
 /// * `v_ids`, an oblivious AVL tree `name -> id`, and `entry_points`, an
 ///   oblivious AVL tree `id -> entry pointer` (a pointer alias of the vertex).
 ///   Their nodes are raw SAM cells of the pointer backend.
-/// * Traversal frontiers: breadth-first search uses a SAM queue of pointer
-///   copies, depth-first search a SAM stack, and the vertices whose
-///   `visited` flag must be reset afterwards are kept in another SAM queue.
 ///
-/// Traversals follow pointers: a vertex's neighbors are reached by copying
-/// the edge pointers stored in its leaves, never by looking an id up in a
-/// client table.
+/// Algorithms look up only their start vertex in the trees and reach every
+/// other vertex by following the edge pointers stored in the leaves (see
+/// `algorithms.rs`).
 ///
 /// # Client state
-/// Only O(1) values: the two AVL root addresses (inside [`SmartAvlTree`]),
-/// the next vertex id, the vertex count, the number of tombstones that may
-/// still be referenced, the layout, and algorithm outputs (paths, costs,
-/// counts) plus optional step marks. The one exception, as in the reference
-/// design, is the priority queue of [`Self::dijkstra`] and [`Self::prim`]:
-/// it is client-side and holds `(key, destination id, parent id, pointer)`
-/// entries for the current frontier.
+/// Between operations, only O(1) values: the two AVL root addresses (inside
+/// [`SmartAvlTree`]), the next vertex id, the vertex count, the number of
+/// tombstones that may still be referenced, and the layout. While a
+/// traversal runs it also holds its frontier and visited set, which grow
+/// with the frontier: frontier entries are `(key, vertex id, parent id,
+/// source visit, edge index)`, and the pointers of visited vertices that
+/// still have frontier entries are held. Algorithm outputs (paths, costs,
+/// counts) are returned to the client.
 ///
 /// # Deletion
 /// [`Self::delete_vertex`] deletes the vertex's own edges and fan-out nodes,
@@ -69,10 +60,6 @@ pub struct ObliviousGraph<P> {
     next_vertex_id: u64,
     vertex_count: u64,
     tombstones: u64,
-    /// When `Some`, algorithms append a [`StepMark`] at every step boundary,
-    /// so per-step costs can be reported for completed steps only. Callers
-    /// clear it between trials.
-    pub step_marks: Option<Vec<StepMark>>,
     marker: PhantomData<fn() -> P>,
 }
 
@@ -87,7 +74,6 @@ impl<P: Clone> ObliviousGraph<P> {
             next_vertex_id: 0,
             vertex_count: 0,
             tombstones: 0,
-            step_marks: None,
             marker: PhantomData,
         }
     }
@@ -629,48 +615,6 @@ impl<P: Clone> ObliviousGraph<P> {
         })
     }
 
-    /// Dereferences `pointer`; if it holds an unvisited vertex, marks it
-    /// visited with `label`, hands every outgoing edge (with a fresh pointer
-    /// alias, none for a self-loop) to `sink` together with the vertex's id,
-    /// and returns that id.
-    /// Returns `None` for an already visited vertex or a tombstone.
-    pub(super) fn visit<B, S>(
-        &self,
-        pointer: &mut P,
-        label: Option<i64>,
-        backend: &mut B,
-        sam: &mut S,
-        sink: &mut VisitSink<'_, P, B, S>,
-    ) -> Result<Option<u64>>
-    where
-        B: GraphBackend<P>,
-        S: SingleAccessMachine<B::Cell>,
-    {
-        let check_live = self.tombstones > 0;
-        backend.with_value(sam, pointer, |object, backend, sam| {
-            let vertex = match object {
-                GraphObject::Deleted(_) => return Ok(None),
-                object => tree::vertex_mut(object)?,
-            };
-            if vertex.visited {
-                return Ok(None);
-            }
-            vertex.visited = true;
-            vertex.label = label;
-            let id = vertex.id;
-            tree::scan(
-                vertex,
-                None,
-                true,
-                check_live,
-                backend,
-                sam,
-                &mut |neighbor, backend, sam| sink(id, neighbor, backend, sam),
-            )?;
-            Ok(Some(id))
-        })
-    }
-
     /// Picks a uniformly random outgoing edge of the vertex behind `pointer`
     /// (`rng.gen_range(0..out_degree)`) and returns a pointer to its
     /// destination with the destination's id; `None` at a sink or tombstone.
@@ -769,12 +713,6 @@ impl<P: Clone> ObliviousGraph<P> {
             backend.delete(sam, &mut current)?;
         }
         Ok(walks)
-    }
-
-    pub(super) fn mark(&mut self, kind: StepKind, operations: OperationCounts) {
-        if let Some(marks) = self.step_marks.as_mut() {
-            marks.push(StepMark { kind, operations });
-        }
     }
 }
 

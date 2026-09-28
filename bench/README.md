@@ -16,7 +16,7 @@ dataset edge lists are read from `osam/real-dataset-tests` (override with
 Outputs (created on first run):
 
 - `graphs/`: generated graphs, reused across runs (`graphs/datasets/` for datasets)
-- `results/rust-logs/`: one record log per ER job, plus `summary.csv`, `steps_by_index.csv` and `structures.csv`
+- `results/rust-logs/`: one record log per ER job, plus `summary.csv` and `structures.csv`
 - `results/rust-dataset-logs/`: the same for `--datasets`
 
 Examples:

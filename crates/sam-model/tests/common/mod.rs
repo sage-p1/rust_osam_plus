@@ -5,7 +5,7 @@
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use sam_model::{
     GraphBackend, GraphInput, ObliviousGraph, PageRankResult, SamError, ShortestPathResult,
-    SingleAccessMachine, SpanningTreeResult, StepKind, TriangleCountResult, WeightedEdge,
+    SingleAccessMachine, SpanningTreeResult, TriangleCountResult, WeightedEdge,
 };
 use std::{
     cmp::Reverse,
@@ -293,26 +293,10 @@ pub fn assert_algorithms_match<P, B, S>(
     for (round, start) in starts.into_iter().enumerate() {
         let context = format!("start {start} round {round}");
         for limit in [None, Some(1), Some(5)] {
-            graph.step_marks = Some(Vec::new());
-            let path = graph.bfs(start, limit, backend, sam).unwrap();
             assert_eq!(
-                path,
+                graph.bfs(start, limit, backend, sam).unwrap(),
                 reference.traverse(start, limit, false),
                 "bfs {context}"
-            );
-            let marks = graph.step_marks.take().unwrap();
-            let steps = marks
-                .iter()
-                .filter(|mark| mark.kind == StepKind::Step)
-                .count();
-            assert_eq!(steps, path.len(), "bfs step marks {context}");
-            assert_eq!(
-                marks
-                    .iter()
-                    .map(|mark| mark.kind)
-                    .skip(steps)
-                    .collect::<Vec<_>>(),
-                vec![StepKind::Tail, StepKind::Cleanup]
             );
             assert_eq!(
                 graph.dfs(start, limit, backend, sam).unwrap(),

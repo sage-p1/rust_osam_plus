@@ -1,22 +1,27 @@
 //! Graph algorithms over [`ObliviousGraph`].
 //!
-//! Every algorithm starts from pointers obtained through the SAM-resident
-//! lookup trees and reaches further vertices only by following edge
-//! pointers. Frontiers are SAM queues and stacks of pointer copies (the
-//! priority queue of Dijkstra and Prim is client-side, see
-//! [`ObliviousGraph`]); every pointer copy is deleted by the time an
-//! algorithm returns. Vertices are reported by their ids.
+//! Every algorithm finds its start vertex through the SAM-resident lookup
+//! trees (once per run) and reaches every other vertex only by following
+//! edge pointers:
+//!
+//! * Traversals (BFS, DFS, Dijkstra, Prim) keep their frontier and visited
+//!   set on the client, so client state grows with the frontier. A frontier
+//!   entry names the visited vertex and edge it came from; the edge pointer
+//!   is copied only when the entry is popped for a visit, so no SAM work is spent on entries that are
+//!   never visited and nothing in SAM needs resetting afterwards.
+//! * Walks (random walk, PageRank) copy the chosen edge pointer at each move;
+//!   triangle counting queues its level-one and level-two neighbors as
+//!   pointer copies in SAM queues.
+//!
+//! Every pointer copy is deleted by the time an algorithm returns.
+//! Vertices are reported by their ids.
 
 use super::core::{entry_item, split_entry, validate_max_neighbors};
-use super::tree::Neighbor;
-use super::{GraphBackend, ObliviousGraph, StepKind};
-use crate::{
-    structures::{queue::SmartQueue, stack::SmartStack, Item},
-    MemoryClass, SamError, SingleAccessMachine,
-};
+use super::{tree, GraphBackend, ObliviousGraph};
+use crate::{structures::queue::SmartQueue, MemoryClass, SamError, SingleAccessMachine};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque},
 };
 
 type Result<T> = std::result::Result<T, SamError>;
@@ -51,47 +56,125 @@ pub struct PageRankResult {
     pub ratios: BTreeMap<usize, f64>,
 }
 
-/// A client-side priority-queue entry: smallest `(key, vertex, parent)` first.
-struct Candidate<P> {
+/// A client-side frontier entry. Heap order: smallest `(key, vertex,
+/// parent)` first.
+struct Candidate {
     key: i64,
     vertex: u64,
     parent: u64,
-    pointer: P,
+    /// Where the pointer to `vertex` is: an edge of a visited vertex, or
+    /// (`None`) the start pointer.
+    source: Option<Source>,
 }
 
-impl<P> Candidate<P> {
+/// Edge `edge` of the `visit`-th visited vertex.
+#[derive(Clone, Copy)]
+struct Source {
+    visit: usize,
+    edge: u64,
+}
+
+/// One frontier entry of the `visit`-th visited vertex was popped: deletes
+/// its held pointer once none remain.
+fn release<P, B, S>(
+    visit: usize,
+    held: &mut [Option<P>],
+    pending: &mut [usize],
+    backend: &mut B,
+    sam: &mut S,
+) -> Result<()>
+where
+    P: Clone,
+    B: GraphBackend<P>,
+    S: SingleAccessMachine<B::Cell>,
+{
+    pending[visit] -= 1;
+    if pending[visit] == 0 {
+        if let Some(mut pointer) = held[visit].take() {
+            backend.delete(sam, &mut pointer)?;
+        }
+    }
+    Ok(())
+}
+
+impl Candidate {
     fn order(&self) -> (i64, u64, u64) {
         (self.key, self.vertex, self.parent)
     }
 }
 
-impl<P> PartialEq for Candidate<P> {
+impl PartialEq for Candidate {
     fn eq(&self, other: &Self) -> bool {
         self.order() == other.order()
     }
 }
 
-impl<P> Eq for Candidate<P> {}
+impl Eq for Candidate {}
 
-impl<P> PartialOrd for Candidate<P> {
+impl PartialOrd for Candidate {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<P> Ord for Candidate<P> {
+impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> Ordering {
         other.order().cmp(&self.order())
     }
 }
 
-/// Which priority a [`ObliviousGraph::best_first`] search uses.
+/// The order in which a search pops its frontier.
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum Priority {
-    /// Path cost (Dijkstra); the label is the cost.
+enum Order {
+    /// Breadth-first: a FIFO queue.
+    Fifo,
+    /// Depth-first: a LIFO stack.
+    Lifo,
+    /// Dijkstra: smallest path cost first.
     PathCost,
-    /// Edge weight (Prim); the label is the parent id.
+    /// Prim: smallest edge weight first.
     EdgeWeight,
+}
+
+/// One visited vertex: its key (path cost for Dijkstra, edge weight for
+/// Prim, 0 otherwise) and the vertex it was reached from.
+struct Visit {
+    vertex: u64,
+    key: i64,
+    parent: u64,
+}
+
+/// A client-side frontier.
+enum Frontier {
+    Queue(VecDeque<Candidate>),
+    Stack(Vec<Candidate>),
+    Heap(BinaryHeap<Candidate>),
+}
+
+impl Frontier {
+    fn new(order: Order) -> Self {
+        match order {
+            Order::Fifo => Self::Queue(VecDeque::new()),
+            Order::Lifo => Self::Stack(Vec::new()),
+            Order::PathCost | Order::EdgeWeight => Self::Heap(BinaryHeap::new()),
+        }
+    }
+
+    fn push(&mut self, candidate: Candidate) {
+        match self {
+            Self::Queue(queue) => queue.push_back(candidate),
+            Self::Stack(stack) => stack.push(candidate),
+            Self::Heap(heap) => heap.push(candidate),
+        }
+    }
+
+    fn pop(&mut self) -> Option<Candidate> {
+        match self {
+            Self::Queue(queue) => queue.pop_front(),
+            Self::Stack(stack) => stack.pop(),
+            Self::Heap(heap) => heap.pop(),
+        }
+    }
 }
 
 pub(super) fn validate_max_steps(max_steps: Option<usize>) -> Result<()> {
@@ -109,35 +192,6 @@ impl<P: Clone> ObliviousGraph<P> {
     {
         self.get_pointer(name, backend, sam)?
             .ok_or(SamError::InvalidParameter("start vertex is missing"))
-    }
-
-    /// Resets the `visited` flag of every vertex in `touched` and deletes
-    /// the queued pointer copies.
-    fn reset_visited<B, S>(
-        &self,
-        touched: &mut SmartQueue,
-        backend: &mut B,
-        sam: &mut S,
-    ) -> Result<()>
-    where
-        B: GraphBackend<P>,
-        S: SingleAccessMachine<B::Cell>,
-    {
-        while !touched.is_empty() {
-            let (pointer, _) = split_entry(touched.dequeue::<B, P, S>(sam)?)?;
-            let mut pointer = pointer.ok_or(SamError::InvalidPointerCell(
-                "visited queue held no pointer",
-            ))?;
-            backend.with_value(sam, &mut pointer, |object, _, _| {
-                if let super::GraphObject::Vertex(vertex) = object {
-                    vertex.visited = false;
-                }
-                Ok(())
-            })?;
-            backend.delete(sam, &mut pointer)?;
-        }
-        touched.dequeue::<B, P, S>(sam)?;
-        Ok(())
     }
 
     /// Executes one random walk of at most `walk_length` moves and returns
@@ -167,16 +221,13 @@ impl<P: Clone> ObliviousGraph<P> {
             backend.delete(sam, &mut current)?;
             current = next;
             trace.push(destination as usize);
-            self.mark(StepKind::Step, sam.stats().operations);
         }
         backend.delete(sam, &mut current)?;
-        self.mark(StepKind::Tail, sam.stats().operations);
         Ok(trace)
     }
 
     /// Breadth-first traversal (visited when dequeued), bounded by the
-    /// number of visited vertices. The frontier is a SAM queue of
-    /// `(pointer, parent id)` entries; each vertex's label is its parent.
+    /// number of visited vertices; see the module documentation.
     pub fn bfs<B, S>(
         &mut self,
         start_name: u64,
@@ -192,8 +243,8 @@ impl<P: Clone> ObliviousGraph<P> {
     }
 
     /// Depth-first traversal (visited when popped; neighbors pushed in edge
-    /// order), bounded by the number of visited vertices. The frontier is a
-    /// SAM stack of `(pointer, parent id)` entries.
+    /// order), bounded by the number of visited vertices; see the
+    /// module documentation.
     pub fn dfs<B, S>(
         &mut self,
         start_name: u64,
@@ -220,98 +271,184 @@ impl<P: Clone> ObliviousGraph<P> {
         B: GraphBackend<P>,
         S: SingleAccessMachine<B::Cell>,
     {
-        /// A queue (BFS) or stack (DFS) of frontier entries in SAM.
-        enum Frontier {
-            Queue(SmartQueue),
-            Stack(SmartStack),
-        }
-        impl Frontier {
-            fn push<P: Clone, B: GraphBackend<P>, S: SingleAccessMachine<B::Cell>>(
-                &mut self,
-                sam: &mut S,
-                item: Item<P>,
-            ) -> Result<()> {
-                match self {
-                    Self::Queue(queue) => {
-                        queue.enqueue::<B, P, S>(sam, MemoryClass::Oblivious, item)
-                    }
-                    Self::Stack(stack) => stack.push::<B, P, S>(sam, MemoryClass::Oblivious, item),
-                }
-            }
-            fn pop<P: Clone, B: GraphBackend<P>, S: SingleAccessMachine<B::Cell>>(
-                &mut self,
-                sam: &mut S,
-            ) -> Result<Option<Item<P>>> {
-                match self {
-                    Self::Queue(queue) if queue.is_empty() => Ok(None),
-                    Self::Queue(queue) => queue.dequeue::<B, P, S>(sam).map(Some),
-                    Self::Stack(stack) if stack.is_empty() => Ok(None),
-                    Self::Stack(stack) => stack.pop::<B, P, S>(sam).map(Some),
-                }
-            }
-        }
-
-        validate_max_steps(max_steps)?;
-        let (start, _) = self.start(start_name, backend, sam)?;
-        let mut frontier = if depth_first {
-            Frontier::Stack(SmartStack::init())
+        let order = if depth_first {
+            Order::Lifo
         } else {
-            Frontier::Queue(SmartQueue::init(sam, MemoryClass::Oblivious))
+            Order::Fifo
         };
-        frontier.push::<P, B, S>(sam, entry_item(Some(start), None))?;
-        let mut touched = SmartQueue::init(sam, MemoryClass::Oblivious);
-        let mut path = Vec::new();
-        loop {
-            if max_steps.is_some_and(|limit| path.len() >= limit) {
-                break;
-            }
-            let Some(item) = frontier.pop::<P, B, S>(sam)? else {
-                break;
-            };
-            let (pointer, label) = split_entry(item)?;
-            let mut pointer = pointer.ok_or(SamError::InvalidPointerCell(
-                "frontier entry has no pointer",
-            ))?;
-            let visited = self.visit(
-                &mut pointer,
-                label,
-                backend,
-                sam,
-                &mut |from, neighbor, _, sam| {
-                    // A self-loop leads back to this now visited vertex: skip it.
-                    match neighbor.pointer {
-                        Some(next) => {
-                            frontier.push::<P, B, S>(sam, entry_item(Some(next), Some(from as i64)))
-                        }
-                        None => Ok(()),
+        Ok(self
+            .search(start_name, max_steps, order, backend, sam)?
+            .into_iter()
+            .map(|visit| visit.vertex as usize)
+            .collect())
+    }
+
+    /// The search loop shared by every traversal: pops frontier entries in
+    /// `order`, skips vertices already visited, and visits the others until
+    /// `max_steps` vertices are visited or the frontier is empty. Returns the
+    /// visits in order.
+    ///
+    /// Vertices are reached only by following pointers (the start vertex
+    /// through the lookup trees, once per run). The frontier and the visited
+    /// set are client-side, so client state grows with the frontier, and
+    /// pointer copies are made lazily:
+    ///
+    /// * visiting a vertex dereferences its pointer and scans its fan-out
+    ///   tree for destination ids; each new destination becomes a frontier
+    ///   entry `(destination id, visited source, edge index)`, without a copy;
+    /// * the client holds the pointer of every visited vertex that still has
+    ///   entries in the frontier;
+    /// * an entry that is popped for a visit reopens its source and copies
+    ///   only that edge; entries popped for vertices already visited, and
+    ///   entries left in the frontier, cost nothing in SAM.
+    ///
+    /// A source's pointer is deleted once none of its entries remain, and
+    /// every held pointer is deleted before the search returns.
+    fn search<B, S>(
+        &mut self,
+        start_name: u64,
+        max_steps: Option<usize>,
+        order: Order,
+        backend: &mut B,
+        sam: &mut S,
+    ) -> Result<Vec<Visit>>
+    where
+        B: GraphBackend<P>,
+        S: SingleAccessMachine<B::Cell>,
+    {
+        validate_max_steps(max_steps)?;
+        let check_live = self.tombstones() > 0;
+        let (start_pointer, start) = self.start(start_name, backend, sam)?;
+        let mut start_pointer = Some(start_pointer);
+        let mut frontier = Frontier::new(order);
+        frontier.push(Candidate {
+            key: 0,
+            vertex: start,
+            parent: start,
+            source: None,
+        });
+        // Pointers of visited vertices, by visit number, while they have
+        // entries in the frontier, and how many entries each still has.
+        let mut held: Vec<Option<P>> = Vec::new();
+        let mut pending: Vec<usize> = Vec::new();
+        // Breadth-first search enqueues each vertex once (its first
+        // discovery fixes its position); the other orders may rediscover a
+        // vertex later or with a better key, so they only skip vertices
+        // already visited. Either way the visit order is that of pushing
+        // every edge and skipping visited vertices when popped.
+        let mut discovered = HashSet::from([start]);
+        let mut visited = HashSet::new();
+        let mut visits = Vec::new();
+        let result = (|| {
+            while max_steps.is_none_or(|limit| visits.len() < limit) {
+                let Some(Candidate {
+                    key,
+                    vertex: id,
+                    parent,
+                    source,
+                }) = frontier.pop()
+                else {
+                    break;
+                };
+                let fresh = visited.insert(id);
+                let mut pointer = match source {
+                    None => start_pointer
+                        .take()
+                        .ok_or(SamError::InvalidPointerCell("start entry popped twice"))?,
+                    Some(Source { visit, .. }) if !fresh => {
+                        release(visit, &mut held, &mut pending, backend, sam)?;
+                        continue;
                     }
-                },
-            )?;
-            match visited {
-                Some(id) => {
-                    touched.enqueue::<B, P, S>(
+                    Some(Source { visit, edge }) => {
+                        let from = held[visit]
+                            .as_mut()
+                            .ok_or(SamError::InvalidPointerCell("frontier source was released"))?;
+                        let pointer = backend.with_value(sam, from, |object, backend, sam| {
+                            tree::with_leaf(
+                                tree::vertex_mut(object)?,
+                                edge,
+                                backend,
+                                sam,
+                                |leaf, backend, sam| {
+                                    let edge = leaf.edge.as_mut().ok_or(
+                                        SamError::InvalidPointerCell("fan-out leaf has no edge"),
+                                    )?;
+                                    backend.copy_pointer(sam, edge)
+                                },
+                            )
+                        })?;
+                        release(visit, &mut held, &mut pending, backend, sam)?;
+                        pointer
+                    }
+                };
+                let number = held.len();
+                let mut entries = 0;
+                let (visited, discovered, frontier) = (&visited, &mut discovered, &mut frontier);
+                backend.with_value(sam, &mut pointer, |object, backend, sam| {
+                    let mut edge = 0;
+                    tree::scan(
+                        tree::vertex_mut(object)?,
+                        None,
+                        false,
+                        check_live,
+                        backend,
                         sam,
-                        MemoryClass::Oblivious,
-                        Item::Pointer(pointer),
-                    )?;
-                    path.push(id as usize);
-                    self.mark(StepKind::Step, sam.stats().operations);
+                        &mut |neighbor, _, _| {
+                            // Scans skip (and then remove) edges to deleted
+                            // vertices, so live edges keep their scan order
+                            // as their index.
+                            let index = edge;
+                            edge += 1;
+                            let destination = neighbor.destination;
+                            let new = match order {
+                                Order::Fifo => discovered.insert(destination),
+                                _ => !visited.contains(&destination),
+                            };
+                            if !new {
+                                return Ok(());
+                            }
+                            let key = match order {
+                                Order::PathCost => {
+                                    key.checked_add(neighbor.weight).ok_or_else(|| {
+                                        SamError::Backend("Dijkstra path weight overflow".into())
+                                    })?
+                                }
+                                Order::EdgeWeight => neighbor.weight,
+                                Order::Fifo | Order::Lifo => 0,
+                            };
+                            frontier.push(Candidate {
+                                key,
+                                vertex: destination,
+                                parent: id,
+                                source: Some(Source {
+                                    visit: number,
+                                    edge: index,
+                                }),
+                            });
+                            entries += 1;
+                            Ok(())
+                        },
+                    )
+                })?;
+                if entries == 0 {
+                    backend.delete(sam, &mut pointer)?;
+                    held.push(None);
+                } else {
+                    held.push(Some(pointer));
                 }
-                None => backend.delete(sam, &mut pointer)?,
+                pending.push(entries);
+                visits.push(Visit {
+                    vertex: id,
+                    key,
+                    parent,
+                });
             }
+            Ok(())
+        })();
+        for mut pointer in held.into_iter().flatten().chain(start_pointer) {
+            backend.delete(sam, &mut pointer)?;
         }
-        self.mark(StepKind::Tail, sam.stats().operations);
-        while let Some(item) = frontier.pop::<P, B, S>(sam)? {
-            if let (Some(mut pointer), _) = split_entry(item)? {
-                backend.delete(sam, &mut pointer)?;
-            }
-        }
-        if let Frontier::Queue(queue) = &mut frontier {
-            queue.dequeue::<B, P, S>(sam)?;
-        }
-        self.reset_visited(&mut touched, backend, sam)?;
-        self.mark(StepKind::Cleanup, sam.stats().operations);
-        Ok(path)
+        result.map(|()| visits)
     }
 
     /// Dijkstra's algorithm with visited-on-pop semantics, bounded by the
@@ -329,7 +466,7 @@ impl<P: Clone> ObliviousGraph<P> {
         S: SingleAccessMachine<B::Cell>,
     {
         let (costs, edges) =
-            self.best_first(start_name, max_steps, Priority::PathCost, backend, sam)?;
+            self.best_first(start_name, max_steps, Order::PathCost, backend, sam)?;
         let total_cost = costs.values().copied().try_fold(0_i64, |total, cost| {
             total
                 .checked_add(cost)
@@ -355,8 +492,7 @@ impl<P: Clone> ObliviousGraph<P> {
         B: GraphBackend<P>,
         S: SingleAccessMachine<B::Cell>,
     {
-        let (_, edges) =
-            self.best_first(start_name, max_steps, Priority::EdgeWeight, backend, sam)?;
+        let (_, edges) = self.best_first(start_name, max_steps, Order::EdgeWeight, backend, sam)?;
         let total_cost = edges.iter().try_fold(0_i64, |total, (_, _, weight)| {
             total
                 .checked_add(*weight)
@@ -372,7 +508,7 @@ impl<P: Clone> ObliviousGraph<P> {
         &mut self,
         start_name: u64,
         max_steps: Option<usize>,
-        priority: Priority,
+        order: Order,
         backend: &mut B,
         sam: &mut S,
     ) -> Result<(BTreeMap<usize, i64>, Vec<(usize, usize, i64)>)>
@@ -380,86 +516,17 @@ impl<P: Clone> ObliviousGraph<P> {
         B: GraphBackend<P>,
         S: SingleAccessMachine<B::Cell>,
     {
-        validate_max_steps(max_steps)?;
-        let (pointer, start) = self.start(start_name, backend, sam)?;
-        let mut heap = BinaryHeap::from([Candidate {
-            key: 0,
-            vertex: start,
-            parent: start,
-            pointer,
-        }]);
-        let mut touched = SmartQueue::init(sam, MemoryClass::Oblivious);
-        let mut keys = BTreeMap::new();
-        let mut edges = Vec::new();
-        loop {
-            if max_steps.is_some_and(|limit| keys.len() >= limit) {
-                break;
-            }
-            let Some(candidate) = heap.pop() else {
-                break;
-            };
-            let Candidate {
-                key,
-                parent,
-                mut pointer,
-                ..
-            } = candidate;
-            let label = match priority {
-                Priority::PathCost => key,
-                Priority::EdgeWeight => parent as i64,
-            };
-            let visited = self.visit(
-                &mut pointer,
-                Some(label),
-                backend,
-                sam,
-                &mut |from, neighbor, _, _| {
-                    let Neighbor {
-                        pointer,
-                        destination,
-                        weight,
-                    } = neighbor;
-                    // A self-loop leads back to this now settled vertex: skip it.
-                    let Some(pointer) = pointer else {
-                        return Ok(());
-                    };
-                    let key = match priority {
-                        Priority::PathCost => key.checked_add(weight).ok_or_else(|| {
-                            SamError::Backend("Dijkstra path weight overflow".into())
-                        })?,
-                        Priority::EdgeWeight => weight,
-                    };
-                    heap.push(Candidate {
-                        key,
-                        vertex: destination,
-                        parent: from,
-                        pointer,
-                    });
-                    Ok(())
-                },
-            )?;
-            match visited {
-                Some(id) => {
-                    touched.enqueue::<B, P, S>(
-                        sam,
-                        MemoryClass::Oblivious,
-                        Item::Pointer(pointer),
-                    )?;
-                    keys.insert(id as usize, key);
-                    if id != start {
-                        edges.push((parent as usize, id as usize, key));
-                    }
-                    self.mark(StepKind::Step, sam.stats().operations);
-                }
-                None => backend.delete(sam, &mut pointer)?,
-            }
-        }
-        self.mark(StepKind::Tail, sam.stats().operations);
-        for mut candidate in heap.into_vec() {
-            backend.delete(sam, &mut candidate.pointer)?;
-        }
-        self.reset_visited(&mut touched, backend, sam)?;
-        self.mark(StepKind::Cleanup, sam.stats().operations);
+        let visits = self.search(start_name, max_steps, order, backend, sam)?;
+        let start = visits.first().map(|visit| visit.vertex);
+        let keys = visits
+            .iter()
+            .map(|visit| (visit.vertex as usize, visit.key))
+            .collect();
+        let edges = visits
+            .iter()
+            .filter(|visit| Some(visit.vertex) != start)
+            .map(|visit| (visit.parent as usize, visit.vertex as usize, visit.key))
+            .collect();
         Ok((keys, edges))
     }
 
@@ -485,9 +552,7 @@ impl<P: Clone> ObliviousGraph<P> {
                 set.insert(neighbor.destination as usize);
                 Ok(())
             })?;
-            self.mark(StepKind::Step, sam.stats().operations);
         }
-        self.mark(StepKind::Tail, sam.stats().operations);
         let [first, second] = sets;
         Ok(first.intersection(&second).copied().collect())
     }
@@ -588,11 +653,6 @@ impl<P: Clone> ObliviousGraph<P> {
             seconds.dequeue::<B, P, S>(sam)?;
         }
         firsts.dequeue::<B, P, S>(sam)?;
-        // DTC has no natural step, so the whole run is one step: a single
-        // `Step` at the end (per-step costs are whole-run costs) and an empty
-        // tail.
-        self.mark(StepKind::Step, sam.stats().operations);
-        self.mark(StepKind::Tail, sam.stats().operations);
         Ok(TriangleCountResult {
             triangles,
             complete,
@@ -669,12 +729,10 @@ impl<P: Clone> ObliviousGraph<P> {
             }
             let (_, id) = current.as_ref().expect("the walk has a current vertex");
             *visits.entry(*id as usize).or_insert(0) += 1;
-            self.mark(StepKind::Step, sam.stats().operations);
         }
         if let Some((mut pointer, _)) = current.take() {
             backend.delete(sam, &mut pointer)?;
         }
-        self.mark(StepKind::Tail, sam.stats().operations);
         let ratios = visits
             .iter()
             .map(|(vertex, count)| (*vertex, *count as f64 / walk_length as f64))
