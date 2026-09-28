@@ -480,8 +480,11 @@ class RustJob:
         return self.log_prefix(directory).with_suffix(".log")
 
     def is_complete(self, directory: Path | None = None) -> bool:
-        # The binary writes FILE.partial and renames it only on success.
-        return local.file_ends_with_marker(self.log_path(directory), "done")
+        # The binary writes FILE.partial and renames it only on success. A
+        # log from an older binary (per-step format) counts as incomplete, so
+        # --skip-existing reruns it.
+        path = self.log_path(directory)
+        return local.file_ends_with_marker(path, "done") and is_current_log(path)
 
     def command(self, log_prefix: Path, fault_handler: bool = False) -> list[str]:
         del fault_handler  # Python-only option; kept for the scheduler's interface
@@ -844,6 +847,21 @@ STRUCTURE_FIELDS = [
 ]
 
 
+def is_current_log(path: Path) -> bool:
+    """Whether ``path`` was written by the current binary (full-length runs:
+    ``algorithm`` records carry ``status=``), not an older per-step one."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        if line.startswith(("steps ", "stepindex ")):
+            return False
+        if line.startswith("algorithm ") and " status=" not in line:
+            return False
+    return True
+
+
 def find_logs(directory: Path = LOG_DIR) -> list[Path]:
     """Completed logs, preferring the main run over serial retries."""
     logs = {path.name: path for path in sorted(directory.glob("retries/*/*.log"))}
@@ -860,11 +878,21 @@ def _write_csv(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> Non
 
 
 def write_report(directory: Path = LOG_DIR, output: Path = SUMMARY_CSV) -> list[dict[str, Any]]:
-    rows, structures = [], []
+    rows, structures, old = [], [], []
     for log in find_logs(directory):
+        if not is_current_log(log):
+            old.append(log)
+            continue
         parsed = parse_log(log)
         rows.extend(report_rows(parsed, log))
         structures.extend(structure_rows(parsed, log))
+    if old:
+        print(
+            f"warning: skipped {len(old)} log(s) from an older binary (per-step format) in "
+            f"{directory}; rerun them (--skip-existing reruns them) or move them elsewhere, "
+            f"e.g. {old[0].name}",
+            file=sys.stderr,
+        )
     _write_csv(output, report_fields(FIELDS, OPTION_FIELDS, rows), rows)
     _write_csv(
         output.with_name("structures.csv"),

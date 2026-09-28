@@ -77,6 +77,19 @@ class RustLauncherTest(unittest.TestCase):
         self.assertIsNone(row["oram_roundtrips_per_step"])
         rust.print_report(rows)
 
+    def test_old_logs_are_rerun_by_skip_existing_and_left_out_of_the_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "old.log").write_text(
+                "algorithm alg=bfs trials=2 full_trials=2 allocations=1 reads=1 writes=1\n"
+                "steps alg=bfs count=7 mean_roundtrips=4.0000\ndone\n"
+            )
+            (root / "new.log").write_text("\n".join(log_lines()) + "\n")
+            self.assertFalse(rust.is_current_log(root / "old.log"))
+            self.assertTrue(rust.is_current_log(root / "new.log"))
+            rows = rust.write_report(root, root / "summary.csv")
+        self.assertEqual({row["log"] for row in rows}, {"new.log"})
+
     def test_old_per_step_logs_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "old.log"
