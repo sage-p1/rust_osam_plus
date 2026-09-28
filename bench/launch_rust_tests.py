@@ -35,9 +35,13 @@ Differences from the Python launcher:
   (``_layout-python``) and the report; ``--exact-original-only`` skips them
   instead. Crypto jobs that cannot fit are always skipped.
 * ``--no-crypto`` turns cryptography off for every job, whatever ``--mode``.
-* ER graphs (``graphs.generate_graph``: the Python benchmarks' generator) are
-  generated once per (n, d, seed) into ``bench/graphs/`` by a background
-  process pool and reused by every job and every rerun.
+* ER graphs are generated once per (n, d, seed, generator) into
+  ``bench/graphs/`` by a background process pool and reused by every job and
+  every rerun. ``--generator fast`` (default) uses networkx's O(n + m)
+  ``fast_gnp_random_graph`` (seconds at n = 2^20); ``--generator exact`` uses
+  ``erdos_renyi_graph``, the Python benchmarks' O(n^2) generator (about 12
+  hours at n = 2^20), which reproduces the Python runs' graphs. Both sample
+  G(n, d/n). Exact-generator jobs carry ``_gen-exact`` in their log names.
 
 Results: one record log per job in ``bench/results/rust-logs/``, plus
 ``summary.csv`` (per job and algorithm), ``steps_by_index.csv`` (per step
@@ -80,7 +84,7 @@ ROOT = Path(__file__).resolve().parent  # rust_osam_plus/bench
 sys.path.insert(0, str(ROOT))
 
 import scheduler as local  # noqa: E402  (vendored scheduler, matrix and datasets)
-from graphs import generate_graph  # noqa: E402
+from graphs import GENERATORS, generate_graph  # noqa: E402
 
 RUST_CRATE = Path(os.environ.get("RUST_CRATE", ROOT.parent / "crates" / "sam-model"))
 RESULTS_DIR = ROOT / "results"
@@ -137,18 +141,21 @@ def algorithm_spec(algorithms: Iterable[str] = ALGORITHMS) -> str:
     return ",".join(f"{algorithm}:{trials_for(algorithm)}" for algorithm in algorithms)
 
 
-def graph_path(n: int, d: int, seed: int = SEED) -> Path:
-    # Same name prepare_rust_graph_benchmark.py uses, so graphs are shared.
-    return GRAPH_DIR / f"ER_n-{n}_d-{d}_seed-{seed}.edgelist"
+def graph_path(n: int, d: int, seed: int = SEED, generator: str = "fast") -> Path:
+    # Same names prepare_rust_graph_benchmark.py uses, so graphs are shared.
+    # The exact generator keeps the original name (graphs made before the
+    # fast generator existed are exact ones).
+    suffix = "" if generator == "exact" else f"_gen-{generator}"
+    return GRAPH_DIR / f"ER_n-{n}_d-{d}_seed-{seed}{suffix}.edgelist"
 
 
-def ensure_graph_file(n: int, d: int, seed: int = SEED) -> str:
+def ensure_graph_file(n: int, d: int, seed: int = SEED, generator: str = "fast") -> str:
     """Generate one ER edge list if missing; atomic so concurrent use is safe."""
-    path = graph_path(n, d, seed)
+    path = graph_path(n, d, seed, generator)
     if path.is_file():
         return str(path)
     partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
-    generate_graph(n, d, seed, partial)
+    generate_graph(n, d, seed, partial, generator)
     os.replace(partial, path)
     return str(path)
 
@@ -193,18 +200,19 @@ class GraphSpec:
     d: int = 0
     seed: int = SEED
     dataset: DatasetRef | None = None
+    generator: str = "fast"
 
     @property
     def path(self) -> Path:
         if self.kind == "er":
-            return graph_path(self.n, self.d, self.seed)
+            return graph_path(self.n, self.d, self.seed, self.generator)
         assert self.dataset is not None
         return GRAPH_DIR / "datasets" / f"{self.dataset.name}.edgelist"
 
     def ensure(self) -> str:
         """Write the file if missing (atomically)."""
         if self.kind == "er":
-            return ensure_graph_file(self.n, self.d, self.seed)
+            return ensure_graph_file(self.n, self.d, self.seed, self.generator)
         path = self.path
         if path.is_file():
             return str(path)
@@ -392,6 +400,7 @@ class RustJob:
     # None for ER jobs; the scheduler distinguishes ER and dataset jobs.
     dataset: DatasetRef | None = None
     options: GraphOptions = GraphOptions()
+    generator: str = "fast"
 
     @property
     def workload(self) -> int:
@@ -409,13 +418,13 @@ class RustJob:
     def graph_spec(self) -> GraphSpec:
         if self.dataset is not None:
             return GraphSpec("dataset", seed=self.seed, dataset=self.dataset)
-        return GraphSpec("er", self.n, self.d, self.seed)
+        return GraphSpec("er", self.n, self.d, self.seed, generator=self.generator)
 
     @property
     def graph(self) -> Path:
         if self.dataset is not None:
             return self.graph_spec.path
-        return graph_path(self.n, self.d, self.seed)
+        return graph_path(self.n, self.d, self.seed, self.generator)
 
     @property
     def name(self) -> str:
@@ -428,6 +437,8 @@ class RustJob:
             name += f"_b-{self.pointer_bf}"
         if self.python_layout:
             name += "_layout-python"
+        if self.dataset is None and self.generator != "fast":
+            name += f"_gen-{self.generator}"
         return name + self.options.tag
 
     @property
@@ -522,6 +533,7 @@ def build_jobs(
     datasets: Iterable[DatasetRef] | None = None,
     move: bool | None = None,
     options: GraphOptions = GraphOptions(),
+    generator: str = "fast",
 ) -> tuple[list[RustJob], list[SkippedConfig]]:
     jobs: list[RustJob] = []
     skipped: dict[tuple[int, str, bool, str], list[Any]] = {}
@@ -542,7 +554,7 @@ def build_jobs(
                             RustJob(
                                 n, d, bs, pointer, cache_enabled, mode, fit.pointer_bf, binary,
                                 python_layout=fit.python_layout, dataset=dataset,
-                                options=options,
+                                options=options, generator=generator,
                             )
                         )
     return jobs, [
@@ -956,6 +968,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dynamic-ops", type=int, default=0, metavar="N",
                         help="Apply N random vertex/edge insertions and deletions before the "
                         "algorithms (default 0).")
+    parser.add_argument("--generator", choices=GENERATORS, default="fast",
+                        help="ER graph generator: fast = networkx fast_gnp_random_graph, "
+                        "O(n + m) (default); exact = erdos_renyi_graph, O(n^2), the Python "
+                        "benchmarks' graphs (about 12 h at n = 2^20).")
     parser.add_argument("--move", action=flag, default=None,
                         help="Force pointer-layer caching on/off for every pointer (Python's "
                         "--move); default: scheduler.cache_settings_for.")
@@ -1002,7 +1018,7 @@ def main() -> int:
     probe = BlockFitProbe(binary)
     jobs, skipped = build_jobs(
         binary, probe, modes, args.block_sizes, args.pointers, args.degrees, powers,
-        datasets=datasets, move=args.move, options=options,
+        datasets=datasets, move=args.move, options=options, generator=args.generator,
     )
     for config in skipped:
         print(

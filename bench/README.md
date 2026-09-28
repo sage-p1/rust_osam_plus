@@ -9,7 +9,7 @@ dataset edge lists are read from `osam/real-dataset-tests` (override with
 |---|---|
 | `launch_rust_tests.py` | Runs the experiment matrix (block sizes × n × degree × pointer × cache) with `oblivious_graph_bench`, then writes the reports. `--report-only` re-parses existing logs. |
 | `scheduler.py` | Memory-aware parallel scheduler, experiment matrix and dataset list, vendored from `osam/launch_local_tests.py`. |
-| `graphs.py` | ER graph generator (the Python benchmarks' generator) and SNAP/CSV dataset export. |
+| `graphs.py` | ER graph generators and SNAP/CSV dataset export. |
 | `prepare_rust_graph_benchmark.py` | Generates one ER graph and prints (or `--run`s) one benchmark command. |
 | `launch_rust_tests_test.py` | Unit tests: `python3 -m unittest launch_rust_tests_test` (from this directory). |
 
@@ -28,6 +28,13 @@ python3 launch_rust_tests.py --no-crypto --no-static --prime --dynamic-ops 1000 
 python3 launch_rust_tests.py --datasets emailEucore --no-crypto
 python3 launch_rust_tests.py --report-only
 ```
+
+ER graphs: `--generator fast` (default) uses networkx's O(n + m)
+`fast_gnp_random_graph` (about a minute at n = 2^20, d = 20);
+`--generator exact` uses `erdos_renyi_graph`, the Python benchmarks' O(n^2)
+generator (about 12 hours at n = 2^20), which gives the same graphs as the
+Python runs. Both sample G(n, d/n). Graph files and exact-generator log names
+say which generator made them.
 
 Setup (Python >= 3.11, which networkx 3.6 and pandas 3.0 require):
 

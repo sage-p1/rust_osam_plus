@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from graphs import generate_graph  # noqa: E402  (the shared ER generator)
+from graphs import GENERATORS, generate_graph  # noqa: E402  (the shared ER generator)
 
 RUST_CRATE = Path(__file__).resolve().parent.parent / "crates" / "sam-model"
 GRAPH_DIR = Path(__file__).resolve().parent / "graphs"
@@ -37,6 +37,13 @@ def main() -> None:
     parser.add_argument("--max-neighbors", type=int, default=5)
     parser.add_argument("--df", type=float, default=0.9)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--generator",
+        choices=GENERATORS,
+        default="fast",
+        help="fast = fast_gnp_random_graph, O(n + m); exact = erdos_renyi_graph, O(n^2), "
+        "the Python benchmarks' graphs",
+    )
     parser.add_argument("--pointer-branching-factor", type=int)
     parser.add_argument("--cache", action="store_true")
     parser.add_argument("--run", action="store_true")
@@ -44,10 +51,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
+    # Same names as launch_rust_tests.graph_path, so graphs are shared.
+    suffix = "" if args.generator == "exact" else f"_gen-{args.generator}"
     output = args.output or GRAPH_DIR / (
-        f"ER_n-{args.n}_d-{args.d}_seed-{args.seed}.edgelist"
+        f"ER_n-{args.n}_d-{args.d}_seed-{args.seed}{suffix}.edgelist"
     )
-    generate_graph(args.n, args.d, args.seed, output)
+    if not output.is_file():
+        generate_graph(args.n, args.d, args.seed, output, args.generator)
 
     command = [
         "cargo",

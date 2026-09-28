@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Graph inputs for ``oblivious_graph_bench``: ER graphs and SNAP / CSV datasets.
 
-``generate_graph`` writes the Erdős–Rényi graph of the Python benchmarks;
+``generate_graph`` writes an Erdős–Rényi graph (see ``GENERATORS``);
 ``dataset_graph`` + ``write_native_graph`` load a SNAP / CSV dataset edge list.
 
 The parsing matches ``benchmark_graph_from_csv.py`` (comments, header rows,
@@ -25,29 +25,42 @@ from typing import Any
 import networkx as nx
 
 
-def generate_graph(n: int, d: int, seed: int, output: Path) -> None:
-    """The ER graph of the Python benchmarks, as a native edge list.
+# G(n, p) samplers, p = d / n. Both sample the same distribution:
+#   fast   networkx.fast_gnp_random_graph: O(n + m) (seconds at n = 2^20)
+#   exact  networkx.erdos_renyi_graph: O(n^2) (about 12 hours at n = 2^20),
+#          the generator of the Python benchmarks, so the same seed gives
+#          the very graph the Python runs used.
+GENERATORS = ("fast", "exact")
 
-    ``erdos_renyi_graph(n, d / n, seed)``, consecutive connected components
-    joined by one random edge each, then every undirected edge written in
-    both directions (as OGraph converts an undirected graph).
+
+def generate_graph(n: int, d: int, seed: int, output: Path, generator: str = "fast") -> None:
+    """An ER graph as a native edge list.
+
+    G(n, d / n) from ``generator`` (see ``GENERATORS``), consecutive connected
+    components joined by one random edge each, then every undirected edge
+    written in both directions (as OGraph converts an undirected graph).
     """
-    from networkx import connected_components, erdos_renyi_graph
+    from networkx import connected_components, erdos_renyi_graph, fast_gnp_random_graph
 
     if n < 1 or d < 0 or d >= n:
         raise ValueError("require 1 <= n and 0 <= d < n")
+    if generator not in GENERATORS:
+        raise ValueError(f"generator must be one of {GENERATORS}, not {generator!r}")
+    sample = fast_gnp_random_graph if generator == "fast" else erdos_renyi_graph
     rng = random.Random(seed)
-    graph = erdos_renyi_graph(n, d / n, seed=seed)
+    graph = sample(n, d / n, seed=seed)
     components = list(connected_components(graph))
     for left, right in zip(components, components[1:]):
         graph.add_edge(rng.choice(tuple(left)), rng.choice(tuple(right)))
+    del components
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as edge_file:
-        for vertex in sorted(graph.nodes):
-            edge_file.write(f"v {vertex}\n")
-        for source, destination in graph.to_directed().edges:
-            edge_file.write(f"{source} {destination} 0\n")
+        edge_file.writelines(f"v {vertex}\n" for vertex in sorted(graph.nodes))
+        # The adjacency in node order: exactly graph.to_directed().edges, but
+        # without building the directed copy (it doubles memory at 2^20).
+        for source, neighbors in graph.adjacency():
+            edge_file.writelines(f"{source} {destination} 0\n" for destination in neighbors)
 
 
 def load_edge_list(file: str | os.PathLike[str]) -> Any:

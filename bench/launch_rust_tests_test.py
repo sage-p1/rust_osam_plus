@@ -201,5 +201,39 @@ class SelfContainedTest(unittest.TestCase):
                     stack.append(w)
         self.assertEqual(len(seen), 40)
 
+
+class GeneratorTest(unittest.TestCase):
+    def test_fast_is_the_default_and_keeps_log_names(self) -> None:
+        self.assertEqual(rust.parse_arguments([]).generator, "fast")
+        job = rust.RustJob(64, 20, 64, "multiwrite", True, "dry-run", None, Path("b"))
+        self.assertNotIn("gen-", job.name)
+        self.assertEqual(job.graph.name, "ER_n-64_d-20_seed-1_gen-fast.edgelist")
+
+    def test_exact_generator_is_named_apart(self) -> None:
+        jobs, _ = rust.build_jobs(Path("b"), Fit(), ("dry-run",), (64,), ("multiwrite",),
+                                  degrees=(4,), powers=(5,), move=True, generator="exact")
+        (job,) = jobs
+        self.assertTrue(job.name.endswith("_gen-exact"))
+        # exact graphs keep the original file name, so cached ones are reused
+        self.assertEqual(job.graph.name, "ER_n-32_d-4_seed-1.edgelist")
+        self.assertEqual(job.graph_spec.generator, "exact")
+
+    def test_generators_sample_valid_graphs(self) -> None:
+        import graphs
+
+        with tempfile.TemporaryDirectory() as directory:
+            texts = {}
+            for generator in graphs.GENERATORS:
+                output = Path(directory) / f"{generator}.edgelist"
+                graphs.generate_graph(300, 10, 1, output, generator)
+                texts[generator] = output.read_text()
+        for generator, text in texts.items():
+            arcs = [line for line in text.splitlines() if not line.startswith("v ")]
+            # mean out-degree near d (connecting components adds a few arcs)
+            self.assertLess(abs(len(arcs) / 300 - 10), 1.5, generator)
+        self.assertNotEqual(texts["fast"], texts["exact"])
+        with self.assertRaises(ValueError):
+            graphs.generate_graph(10, 2, 1, Path(directory) / "x", "slow")
+
 if __name__ == "__main__":
     unittest.main()
