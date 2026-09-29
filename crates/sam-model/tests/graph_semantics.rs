@@ -9,7 +9,7 @@ use common::{
 use rand::{rngs::StdRng, SeedableRng};
 use sam_model::{
     pointer::{
-        CachedPointers, MultiWritePointers, OriginalPointers, PointerKind, RaryPointers,
+        BalancedPointers, CachedPointers, MultiWritePointers, OriginalPointers, PointerKind, RaryPointers,
         RecursivePointers, SmartPointerBackend,
     },
     DryRunSam, GraphBackend, GraphInput, GraphLayout, NoMovePointers, ObliviousGraph,
@@ -237,6 +237,30 @@ backend_suite!(
         branching_factor: 6
     },
     RaryPointers::new(6).unwrap()
+);
+backend_suite!(
+    balanced2,
+    PointerKind::Balanced {
+        branching_factor: 2,
+        buffered_writes: false
+    },
+    BalancedPointers::new(2).unwrap().unbuffered()
+);
+backend_suite!(
+    balanced3,
+    PointerKind::Balanced {
+        branching_factor: 3,
+        buffered_writes: false
+    },
+    BalancedPointers::new(3).unwrap().unbuffered()
+);
+backend_suite!(
+    balancedrary6,
+    PointerKind::Balanced {
+        branching_factor: 6,
+        buffered_writes: true
+    },
+    BalancedPointers::new(6).unwrap()
 );
 backend_suite!(
     rary64,

@@ -20,7 +20,7 @@ pub use codec::{BlockCodec, U64Codec};
 pub use dry_run::DryRunSam;
 pub use error::SamError;
 pub use graph::{
-    CachedGraphPointerCodec, DeletedObject, FanOut, GraphBackend, GraphInput, GraphLayout,
+    BalancedGraphPointerCodec, CachedGraphPointerCodec, DeletedObject, FanOut, GraphBackend, GraphInput, GraphLayout,
     GraphObject, GraphPointerCodec, GraphValueCodec, MultiWriteGraphPointerCodec, NoMovePointers,
     ObliviousGraph, OriginalGraphPointerCodec, PageRankResult, RaryGraphPointerCodec,
     RecursiveGraphPointerCodec, ShortestPathResult, SpanningTreeResult, Tagged,

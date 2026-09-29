@@ -208,7 +208,7 @@ class ActiveJob:
 
 def cache_settings_for(pointer: str) -> tuple[bool, ...]:
     """Return the cache configurations that are meaningful for one backend."""
-    if pointer in {"multiwrite", "multiwriterary"}:
+    if pointer in {"multiwrite", "multiwriterary", "balanced", "balancedrary"}:
         return (True,)
     if pointer == "recursive":
         # Recursive ORAM runs without moves.  For the read-only algorithms,

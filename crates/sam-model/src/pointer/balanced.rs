@@ -421,6 +421,9 @@ fn digit(pos: u64, level: usize, b: usize) -> usize {
 pub struct BalancedPointers {
     b: usize,
     new_calls: usize,
+    /// BlockOSAM-style public flushes after every `b` buffered writes. Off
+    /// when every write is its own round trip (the Concrete OSAM setting).
+    buffered: bool,
 }
 
 impl BalancedPointers {
@@ -430,7 +433,58 @@ impl BalancedPointers {
                 "branching factor must be in 2..=255",
             ));
         }
-        Ok(Self { b, new_calls: 0 })
+        Ok(Self {
+            b,
+            new_calls: 0,
+            buffered: true,
+        })
+    }
+
+    /// Writes are round trips of their own: no public flushes are issued.
+    pub fn unbuffered(mut self) -> Self {
+        self.buffered = false;
+        self
+    }
+
+    /// Bulk copy. From a single-alias pointer it reads the root and installs a
+    /// complete tree with `num_copies + 1` aliases (1 read plus the install
+    /// writes, where scalar copies would pay 2H reads each). Otherwise, or when
+    /// the root is cached, it makes the copies one at a time.
+    fn copy_bulk<V: Clone, S: SingleAccessMachine<BalancedCell<V>>>(
+        &mut self,
+        sam: &mut S,
+        ptr: &mut BalancedPointer,
+        num_copies: usize,
+        roots: &mut dyn CachedRoots<BalancedWriteback>,
+    ) -> Result<Vec<BalancedPointer>, SamError> {
+        if num_copies == 0 {
+            return Err(SamError::InvalidParameter("num_copies must be positive"));
+        }
+        let head = ptr.head.ok_or(err("deleted balanced pointer"))?;
+        if num_copies > 1 && !roots.is_cached(head) {
+            match read_cell::<V, S>(sam, head)? {
+                BalancedCell::Root { value, .. } => {
+                    // A root pointer is the sole alias (H = 0).
+                    let mut leaves = self.install(sam, value, num_copies + 1)?;
+                    *ptr = leaves.remove(0);
+                    return Ok(leaves);
+                }
+                cell @ BalancedCell::Node { .. } => {
+                    let fresh = alloc(sam);
+                    let n = alloc(sam);
+                    let first = self.copy_general(sam, ptr, cell, fresh, n, roots)?;
+                    let mut copies = vec![first];
+                    for _ in 1..num_copies {
+                        copies.push(self.copy_one::<V, S>(sam, ptr, roots)?);
+                    }
+                    return Ok(copies);
+                }
+                BalancedCell::Kids { .. } => return Err(err("pointer to a child list")),
+            }
+        }
+        (0..num_copies)
+            .map(|_| self.copy_one::<V, S>(sam, ptr, roots))
+            .collect()
     }
 
     pub fn branching_factor(&self) -> usize {
@@ -817,6 +871,7 @@ impl BalancedPointers {
         let mut w = Bounded {
             sam,
             b,
+            enabled: self.buffered,
             pending: 0,
             _v: std::marker::PhantomData,
         };
@@ -849,12 +904,16 @@ impl BalancedPointers {
 struct Bounded<'a, V, S> {
     sam: &'a mut S,
     b: usize,
+    enabled: bool,
     pending: usize,
     _v: std::marker::PhantomData<V>,
 }
 
 impl<V: Clone, S: SingleAccessMachine<BalancedCell<V>>> Bounded<'_, V, S> {
     fn tick(&mut self, n: usize) -> Result<(), SamError> {
+        if !self.enabled {
+            return Ok(());
+        }
         self.pending += n;
         while self.pending >= self.b {
             self.pending -= self.b;
@@ -943,7 +1002,7 @@ impl<V: Clone> SmartPointerBackend<V> for BalancedPointers {
             STRUCTURE,
         )?;
         self.new_calls += 1;
-        if self.new_calls == self.b {
+        if self.buffered && self.new_calls == self.b {
             self.new_calls = 0;
             sam.flush(self.b, STRUCTURE)?;
         }
@@ -956,6 +1015,15 @@ impl<V: Clone> SmartPointerBackend<V> for BalancedPointers {
         ptr: &mut BalancedPointer,
     ) -> Result<BalancedPointer, SamError> {
         self.copy_one::<V, S>(sam, ptr, &mut NoRoots)
+    }
+
+    fn copy_many<S: SingleAccessMachine<Self::Cell>>(
+        &mut self,
+        sam: &mut S,
+        ptr: &mut BalancedPointer,
+        num_copies: usize,
+    ) -> Result<Vec<BalancedPointer>, SamError> {
+        self.copy_bulk::<V, S>(sam, ptr, num_copies, &mut NoRoots)
     }
 
     fn get<S: SingleAccessMachine<Self::Cell>>(
@@ -1043,9 +1111,29 @@ impl<V: Clone> CacheablePointerBackend<V> for BalancedPointers {
         num_copies: usize,
         roots: &mut dyn CachedRoots<BalancedWriteback>,
     ) -> Result<Vec<BalancedPointer>, SamError> {
-        (0..num_copies)
-            .map(|_| self.copy_one::<V, S>(sam, ptr, roots))
-            .collect()
+        self.copy_bulk::<V, S>(sam, ptr, num_copies, roots)
+    }
+}
+
+impl<V: Clone> super::RawValueCells<V> for BalancedPointers {
+    fn raw_cell(value: V) -> Self::Cell {
+        BalancedCell::Root {
+            value,
+            meta: BalancedMeta {
+                count: 1,
+                height: 0,
+                down: None,
+            },
+        }
+    }
+
+    fn raw_value(cell: Self::Cell) -> Result<V, SamError> {
+        match cell {
+            BalancedCell::Root { value, .. } => Ok(value),
+            _ => Err(SamError::InvalidPointerCell(
+                "expected a raw structure cell, found a pointer node",
+            )),
+        }
     }
 }
 
