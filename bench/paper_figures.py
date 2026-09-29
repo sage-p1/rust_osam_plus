@@ -101,6 +101,19 @@ BOSAM_SERIES = (
 )
 
 
+def fit_open() -> str:
+    """Start boxing a tabular so fit_close() can scale it to a width and a height."""
+    return ("\\ExplSyntaxOn\\cs_gset:Npn \\osamfpeval #1 {\\fp_eval:n {#1}}\\ExplSyntaxOff\n"
+            "\\ifdefined\\osamfitbox\\else\\newsavebox\\osamfitbox\\fi\n\\sbox\\osamfitbox{%")
+
+
+def fit_close(width: str, height: str = "0.78\\textheight") -> str:
+    """Close fit_open(): scale to `width`, shrinking further if taller than `height`."""
+    return ("}%\n\\scalebox{\\osamfpeval{min((\\the\\dimexpr " + width + "\\relax)/(\\the\\wd\\osamfitbox),"
+            " (\\the\\dimexpr " + height + "\\relax)/(\\the\\ht\\osamfitbox + \\the\\dp\\osamfitbox))}}"
+            "{\\usebox\\osamfitbox}")
+
+
 @dataclass(frozen=True)
 class Point:
     log2n: int
@@ -335,7 +348,7 @@ def summary_table(summary, structures) -> str:
         "\\begin{table*}[t]",
         "\\centering\\footnotesize",
         "\\renewcommand{\\arraystretch}{1.35}",
-        "\\resizebox{\\textwidth}{!}{%",
+        fit_open(),
         "\\begin{tabular}{l | l | r r r r r r r r r}",
         "\\hline",
         f"Configuration & Impl. & {header}\\\\",
@@ -353,7 +366,7 @@ def summary_table(summary, structures) -> str:
             end = "\\\\ \\hline" if index == len(BOSAM_SERIES) - 1 else "\\\\"
             lines.append(f"& {series.label} & " + " & ".join(cells) + end)
     lines += [
-        "\\end{tabular}}",
+        "\\end{tabular}" + fit_close("\\textwidth"),
         "\\caption{Base-two logarithm of round trips at the largest graph size of each configuration, "
         "for \\sysname, OSAM$^+$ and recursive Path ORAM: the total for Build and the cost per step for "
         "the algorithms (a visited vertex for BFS, DFS, Dijkstra and Prim; a move for RW and PR; a "
@@ -456,10 +469,10 @@ def dataset_table(summary, structures) -> str:
     width = 3 + len(DATASET_COLUMNS)
     lines = [
         HEADER.rstrip("\n"),
-        "\\begin{table*}[t]",
+        "\\begin{table*}[tp]",
         "\\centering\\footnotesize",
         "\\renewcommand{\\arraystretch}{1.35}",
-        "\\resizebox{\\textwidth}{!}{%",
+        fit_open(),
         "\\begin{tabular}{l | r | l | " + " ".join("r" for _ in DATASET_COLUMNS) + "}",
         "\\hline",
         f"Dataset & $bs$ & Impl. & {header}\\\\",
@@ -500,7 +513,7 @@ def dataset_table(summary, structures) -> str:
         short_text = (" $^{\\dagger}$Fewer than $50$ full-length runs were found in $1000$ draws of the "
                       "entry point (" + "; ".join(notes) + " runs).")
     lines += [
-        "\\end{tabular}}",
+        "\\end{tabular}" + fit_close("\\textwidth"),
         "\\caption{Base-two logarithm of round trips (reads plus writes) on each real dataset: the "
         "total for Build and the cost per step for the algorithms (a visited vertex for BFS, DFS, "
         "Dijkstra, and Prim; a move for RW and PR; a neighbor-list retrieval for CD; the whole run for "
@@ -575,16 +588,13 @@ BOSAM_MAIN_COLUMNS = ("build", "cd", "bfs", "rw")
 BOSAM_FULL_COLUMNS = ("build", "cd", "bfs", "dfs", "dijkstra", "prim", "dtc", "pr", "rw")
 
 
-def bosam_dataset_table(summary, structures, columns, full: bool,
-                        min_degree: float = BOSAM_MIN_DEGREE) -> str:
+def bosam_dataset_table(summary, structures, columns, full: bool) -> str:
     width = 3 + len(columns)
     header = " & ".join(f"\\textsf{{{CAPTION[alg] if alg != 'dijkstra' else 'Dijkstra'}}}" for alg in columns)
     if full:
-        # Six or more datasets overflow a page at the default row height.
-        lines = [HEADER.rstrip("\n"), "\\begin{table*}[t]", "\\centering",
-                 "\\renewcommand{\\arraystretch}{0.9}"]
+        lines = [HEADER.rstrip("\n"), "\\begin{table*}[tp]", "\\centering"]
     else:
-        lines = [HEADER.rstrip("\n"), "\\begin{table}[t]", "\\centering"]
+        lines = [HEADER.rstrip("\n"), "\\begin{table}[tp]", "\\centering"]
     short = set()
     body = []
     for dataset, (name, directed) in DATASETS.items():
@@ -592,7 +602,7 @@ def bosam_dataset_table(summary, structures, columns, full: bool,
         if rows.empty:
             continue
         n, edges = int(rows.n.iloc[0]), int(rows.edges.iloc[0])
-        if edges / n < min_degree:
+        if edges / n < BOSAM_MIN_DEGREE:
             continue
         kind = "Directed" if directed else "Undirected"
         stack = f"{name}\\\\{kind}\\\\$\\log_2 n={math.log2(n):.1f}$\\\\$d={edges / n:.0f}$"
@@ -626,9 +636,8 @@ def bosam_dataset_table(summary, structures, columns, full: bool,
             "traversals behave alike; all eight algorithms are in "
             "Table~\\ref{tab:real-graph-results-full}), and Random Walk")
     caption = (
-        f"\\caption{{Base-two logarithm of round trips on the SNAP graphs"
-        + (f" with average out-degree $d\\ge {min_degree:g}$" if min_degree > 0 else "")
-        + f", for {what}: the total for Build and the cost per step for the "
+        f"\\caption{{Base-two logarithm of round trips on the SNAP graphs with average out-degree "
+        f"$d\\ge {BOSAM_MIN_DEGREE}$, for {what}: the total for Build and the cost per step for the "
         "algorithms (a visited vertex, a walk move, or a neighbor-list retrieval; the whole run for "
         "DTC), averaged over $50$ full-length runs. \\sysname is charged reads only, since its writes "
         "are buffered and evicted in public batches; OSAM$^+$ and recursive Path ORAM are charged reads "
@@ -639,16 +648,16 @@ def bosam_dataset_table(summary, structures, columns, full: bool,
     if not full:
         lines += ["\\ifnum\\conference=0", "\\def\\realgraphtablewidth{0.70\\columnwidth}", "\\else",
                   "\\def\\realgraphtablewidth{\\columnwidth}", "\\fi",
-                  "\\resizebox{\\realgraphtablewidth}{!}{%"]
+                  fit_open()]
     else:
-        lines.append("\\resizebox{\\textwidth}{!}{%")
+        lines.append(fit_open())
     lines += [
         "\\begin{tabular}{l | r | l | " + " | ".join("r" for _ in columns) + "}",
         "\\toprule",
         f"\\textsf{{Dataset}} & $\\mathit{{bs}}$ & \\textsf{{Impl.}} & {header}\\\\",
         "\\midrule",
     ] + body + [
-        "\\end{tabular}}",
+        "\\end{tabular}" + fit_close("\\realgraphtablewidth" if not full else "\\textwidth"),
         "\\label{tab:real-graph-results-full}" if full else "\\label{tab:real-graph-results}",
         "\\end{table*}" if full else "\\end{table}",
         "",
@@ -656,15 +665,14 @@ def bosam_dataset_table(summary, structures, columns, full: bool,
     return "\n".join(lines)
 
 
-def write_bosam_datasets(root: Path, summary, structures,
-                         min_degree: float = BOSAM_MIN_DEGREE) -> list[Path]:
+def write_bosam_datasets(root: Path, summary, structures) -> list[Path]:
     plots = root / "Plots"
     plots.mkdir(parents=True, exist_ok=True)
     written = []
     for name, columns, full in (("bosam_dataset_table.tex", BOSAM_MAIN_COLUMNS, False),
                                 ("bosam_dataset_table_full.tex", BOSAM_FULL_COLUMNS, True)):
         path = plots / name
-        path.write_text(bosam_dataset_table(summary, structures, columns, full, min_degree))
+        path.write_text(bosam_dataset_table(summary, structures, columns, full))
         written.append(path)
     return written
 
@@ -678,10 +686,6 @@ def main() -> int:
                         help="datasets (log names) to leave out of the dataset tables")
     parser.add_argument("--concrete", type=Path, help="Concrete OSAM paper root (has plots/)")
     parser.add_argument("--bosam", type=Path, help="BlockOSAM paper root (has Plots/)")
-    parser.add_argument("--bosam-min-degree", type=float, default=0.0,
-                        help="keep only datasets with average out-degree >= this in the BlockOSAM "
-                             "dataset tables (0 keeps every dataset; the old default was "
-                             f"{BOSAM_MIN_DEGREE})")
     parser.add_argument("--prime-tag", default="primefalse",
                         help="file-name tag matching \\primetag in the Concrete OSAM macros.tex")
     args = parser.parse_args()
@@ -700,8 +704,7 @@ def main() -> int:
         if args.concrete:
             written += write_concrete_datasets(args.concrete.expanduser(), summary, structures)
         if args.bosam:
-            written += write_bosam_datasets(args.bosam.expanduser(), summary, structures,
-                                            args.bosam_min_degree)
+            written += write_bosam_datasets(args.bosam.expanduser(), summary, structures)
     print(f"wrote {len(written)} file(s)")
     return 0
 

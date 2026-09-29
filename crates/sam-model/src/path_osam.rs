@@ -75,9 +75,10 @@ impl<V: Clone, C: BlockCodec<V, B>, const B: usize, const Z: BucketSize, const P
 {
     /// Installs a completed dry-run snapshot into a fresh Path OSAM+ tree.
     ///
-    /// Installation always uses ordinary evicting writes to populate the
-    /// server tree. The configured access strategy applies after installation,
-    /// so r-ary benchmark writes remain local.
+    /// Installation places every block in one client-side pass and writes
+    /// each bucket once (`PathOsamPlus::bulk_load`), as when the client uploads
+    /// memory it built locally. The configured access strategy applies after
+    /// installation, so r-ary benchmark writes remain local.
     #[allow(clippy::too_many_arguments)]
     pub fn from_snapshot(
         snapshot: SamSnapshot<V>,
@@ -123,6 +124,7 @@ impl<V: Clone, C: BlockCodec<V, B>, const B: usize, const Z: BucketSize, const P
             access.insert(identifier, AccessState::default());
         }
 
+        let mut installed = Vec::with_capacity(snapshot.blocks.len());
         for block in &snapshot.blocks {
             if block.identifier == 0 || block.identifier >= snapshot.next_identifier {
                 return Err(SamError::InvalidAddress(Address::Oblivious(
@@ -131,14 +133,7 @@ impl<V: Clone, C: BlockCodec<V, B>, const B: usize, const Z: BucketSize, const P
             }
             let position = leaves.leaf(block.identifier);
             let encoded = codec.encode(&block.value)?;
-            osam.write(
-                block.identifier,
-                position,
-                BlockValue::new(encoded),
-                ordered_evict,
-                &mut rng,
-            )
-            .map_err(|error| SamError::Backend(error.to_string()))?;
+            installed.push((block.identifier, position, BlockValue::new(encoded)));
             access.insert(
                 block.identifier,
                 AccessState {
@@ -147,6 +142,11 @@ impl<V: Clone, C: BlockCodec<V, B>, const B: usize, const Z: BucketSize, const P
                 },
             );
         }
+
+        // The client built this memory locally: place every block in one pass
+        // and upload each bucket once (see `PathOsamPlus::bulk_load`).
+        osam.bulk_load(installed)
+            .map_err(|error| SamError::Backend(error.to_string()))?;
 
         let build_max_stash = osam.max_occupancy();
         let stats = Stats {

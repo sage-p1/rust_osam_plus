@@ -8,6 +8,7 @@
 //! An implementation of Path OSAM+.
 
 use super::stash::ObliviousStash;
+use crate::bucket::PathOsamPlusBlock;
 use crate::{
     backend::Backend,
     utils::{CompleteBinaryTreeIndex, TreeHeight, TreeIndex},
@@ -194,6 +195,63 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         })
     }
 
+    /// Initializes an empty tree with `blocks` in one client-side pass, as when
+    /// the client has built its memory locally and uploads it once.
+    ///
+    /// Each block is placed in the deepest bucket on the path to its leaf that
+    /// still has a free slot (the placement one greedy eviction of every path
+    /// would give), and every bucket is written exactly once. Blocks that do
+    /// not fit on their path go to the stash. This costs O(N log N) time,
+    /// where writing the blocks one by one with `write` fills the stash while
+    /// the tree is empty and costs time quadratic in N.
+    ///
+    /// The server sees only the upload of every bucket, so the placement is
+    /// not required to be oblivious. The tree must be empty.
+    pub fn bulk_load(
+        &mut self,
+        blocks: Vec<(Identifier, TreeIndex, V)>,
+    ) -> Result<(), OsamPlusError> {
+        let height = self.height;
+        let leaves: u64 = 1 << height;
+        let buckets = usize::try_from(2 * leaves - 1)?;
+        // pending[node]: blocks waiting to be placed at or above `node`.
+        let mut pending: Vec<Vec<PathOsamPlusBlock<V>>> = Vec::new();
+        pending.resize_with(buckets + 1, Vec::new);
+        for (identifier, position, value) in blocks {
+            assert_ne!(identifier, Identifier::MAX);
+            assert!(position.is_leaf(height));
+            pending[usize::try_from(position)?].push(PathOsamPlusBlock {
+                value,
+                identifier,
+                position,
+            });
+        }
+        // Fill buckets from the leaves up; what does not fit moves to the parent.
+        let mut slots = vec![PathOsamPlusBlock::<V>::dummy(); Z];
+        for node in (1..=buckets).rev() {
+            let mut waiting = std::mem::take(&mut pending[node]);
+            let placed = waiting.len().min(Z);
+            for (slot, block) in waiting.drain(..placed).enumerate() {
+                slots[slot] = block;
+            }
+            for slot in slots.iter_mut().skip(placed) {
+                *slot = PathOsamPlusBlock::<V>::dummy();
+            }
+            self.backend.write_bucket_from_stash(&mut slots, node, 0);
+            if node > 1 {
+                pending[node / 2].append(&mut waiting);
+            } else if !waiting.is_empty() {
+                let overflow = waiting
+                    .into_iter()
+                    .map(|block| (block.identifier, block.position, block.value))
+                    .collect();
+                self.stash.write_batch_to_stash(overflow)?;
+            }
+        }
+        self.update_stash_stats();
+        Ok(())
+    }
+
     /// Reads a single value while evicting P paths. Downloads P + 1, or P if the
     /// read path is also an evict path, paths.
     pub fn read_multi_paths<R: Rng + CryptoRng>(
@@ -236,10 +294,8 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         // Remove block from stash (and replace with dummy).
         let result = self.stash.read_from_stash(identifier)?;
 
-        // Remove the read path if it is not one of the evict paths.
-        if P != 0 && positions.len() == P + 1 {
-            positions.remove(&position);
-        }
+        // Write the read path back as well (as in Path ORAM), so its other
+        // blocks stay in the tree instead of accumulating in the stash.
 
         // Evict blocks from the stash along a single path.
         self.stash
@@ -575,10 +631,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for Pat
         // Remove duplicates.
         let _ = self.stash.merge();
 
-        // Remove the dummy path if it is not the evict path.
-        if positions.len() == 2 {
-            positions.remove(&dummy_position);
-        }
+        // Write the dummy path back as well, for the same reason as reads.
 
         // Evict blocks from the stash along a single path.
         self.stash
@@ -627,10 +680,7 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> OsamPlus for Pat
         // Remove block from stash (and replace with dummy).
         let result = self.stash.read_from_stash(identifier)?;
 
-        // Remove the read path if it is not the evict path.
-        if positions.len() == 2 {
-            positions.remove(&position);
-        }
+        // Write the read path back as well (see `read_multi_paths`).
 
         // Evict blocks from the stash along a single path.
         self.stash

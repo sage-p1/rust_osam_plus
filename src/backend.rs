@@ -23,6 +23,9 @@ struct EncryptedBackend {
     physical_memory: Vec<Vec<u8>>,
     cipher: Aes256Gcm,
     nonces: Vec<Nonce<U12>>,
+    /// Counter for fresh nonces. The key is random per backend, so a counter
+    /// gives unique nonces without searching the nonces already in use.
+    next_nonce: u64,
 }
 
 impl EncryptedBackend {
@@ -35,21 +38,18 @@ impl EncryptedBackend {
         // Generate key, cipher, and vector of unique nonces (one for each bucket) for encryption.
         let key = Key::<Aes256Gcm>::generate();
         let cipher = Aes256Gcm::new(&key);
-        let mut nonces = Vec::new();
-        while nonces.len() < backend_size {
-            let nonce = Nonce::generate();
-            if !nonces.contains(&nonce) {
-                nonces.push(nonce);
-            }
-        }
-
         // Intialize physical memory in backend so `encrypt_bucket` can be called correctly.
         let physical_memory = Vec::new();
         let mut backend = Self {
             physical_memory,
             cipher,
-            nonces,
+            nonces: Vec::with_capacity(backend_size),
+            next_nonce: 0,
         };
+        for _ in 0..backend_size {
+            let nonce = backend.fresh_nonce();
+            backend.nonces.push(nonce);
+        }
 
         // `physical_memory` holds `block_capacity - 1` buckets, each storing up to Z blocks.
         // The number of leaves is `block_capacity` / 2, which the original Path ORAM paper's experiments
@@ -66,6 +66,14 @@ impl EncryptedBackend {
 
     pub fn block_capacity(&self) -> usize {
         self.physical_memory.len()
+    }
+
+    /// A nonce never used before under this backend's key (a 64-bit counter).
+    fn fresh_nonce(&mut self) -> Nonce<U12> {
+        let mut bytes = [0u8; 12];
+        bytes[..8].copy_from_slice(&self.next_nonce.to_le_bytes());
+        self.next_nonce += 1;
+        Nonce::from(bytes)
     }
 
     /// Encrypt a bucket with a nonce.
@@ -104,13 +112,7 @@ impl EncryptedBackend {
                 let bucket = Bucket::<V, Z>::reconstruct(&plaintext);
                 output = Some(bucket);
                 // Generate a new unique nonce for the future.
-                loop {
-                    let nonce = Nonce::generate();
-                    if !self.nonces.contains(&nonce) {
-                        self.nonces[index] = nonce;
-                        break;
-                    }
-                }
+                self.nonces[index] = self.fresh_nonce();
             }
             Err(_) => {
                 output = None;

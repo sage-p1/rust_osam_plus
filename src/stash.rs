@@ -78,7 +78,7 @@ impl<V: OsamPlusBlock> ObliviousStash<V> {
     ) -> Result<(), OsamPlusError> {
         // This function is called by `write`, `read`, and `read_multi_paths` to evict either
         // 1 or P paths to the server.
-        assert!(positions.len() == 1 || positions.len() == P);
+        assert!(positions.len() <= P + 1 || positions.len() <= 2);
 
         // Create sorted vector of all unique buckets
         // and map of buckets to number of assigned blocks.
