@@ -17,8 +17,8 @@ pub use no_move::{NoMovePointers, Tagged, TaggedGraphPointerCodec};
 
 use crate::{
     pointer::{
-        CachedPointer, MultiWritePointer, OriginalPointer, PointerKind, RaryPointer, RawValueCells,
-        RecursivePointer, ValueCodec,
+        BalancedPointer, CachedPointer, MultiWritePointer, OriginalPointer, PointerKind,
+        RaryPointer, RawValueCells, RecursivePointer, ValueCodec,
     },
     structures::{AvlKey, AvlNode, Item, QueueEntry, StackEntry},
     Address, SamError,
@@ -42,6 +42,9 @@ const MAX_STRUCTURE_PAYLOAD_BYTES: usize = 41;
 pub trait GraphBackend<P: Clone>: RawValueCells<GraphObject<P>, Pointer = P> {}
 
 impl<P: Clone, B: RawValueCells<GraphObject<P>, Pointer = P>> GraphBackend<P> for B {}
+
+/// Root-cell metadata of the balanced pointer (see `pointer::BalancedCellValueCodec`).
+const BALANCED_ROOT_OVERHEAD: usize = 10;
 
 /// Exact fixed-block layout selected for graph records.
 ///
@@ -67,6 +70,8 @@ impl GraphLayout {
         let pointer_cell_overhead = match pointer_kind {
             PointerKind::Original => 41,
             PointerKind::MultiWrite | PointerKind::MultiWriteRary { .. } => 1,
+            // Tag 1 + alias count 4 + height 1 + child-list address 4.
+            PointerKind::Balanced { .. } => BALANCED_ROOT_OVERHEAD,
             PointerKind::Recursive => 0,
         };
 
@@ -79,6 +84,15 @@ impl GraphLayout {
                         SamError::Backend("r-ary pointer cell size overflow".into())
                     })?)
                     .ok_or_else(|| SamError::Backend("r-ary pointer cell size overflow".into()))?,
+                // Envelope 4 + tag 1 + parent 4 + group length 1 + 8 per member
+                // (node and child-list addresses, 4 bytes each).
+                PointerKind::Balanced {
+                    branching_factor, ..
+                } => 10_usize
+                    .checked_add(8_usize.checked_mul(branching_factor).ok_or_else(|| {
+                        SamError::Backend("balanced pointer cell size overflow".into())
+                    })?)
+                    .ok_or_else(|| SamError::Backend("balanced pointer cell size overflow".into()))?,
                 PointerKind::Recursive => 0,
             };
         if block_size < minimum_internal_cell {
@@ -134,6 +148,8 @@ impl GraphLayout {
         let pointer_cell_overhead = match pointer_kind {
             PointerKind::Original => 41,
             PointerKind::MultiWrite | PointerKind::MultiWriteRary { .. } => 1,
+            // Tag 1 + alias count 4 + height 1 + child-list address 4.
+            PointerKind::Balanced { .. } => BALANCED_ROOT_OVERHEAD,
             PointerKind::Recursive => 0,
         };
         Ok(Self {
@@ -142,6 +158,13 @@ impl GraphLayout {
             graph_branching_factor,
             exact: false,
         })
+    }
+
+    /// The same layout, marked as not fitting its block (reported as
+    /// `layout=python-sized`); only meaningful for the dry-run SAM.
+    pub fn marked_inexact(mut self) -> Self {
+        self.exact = false;
+        self
     }
 
     /// The same layout with a smaller outgoing-edge fanout (records then use
@@ -308,6 +331,22 @@ macro_rules! address_pointer_codec {
 address_pointer_codec!(MultiWriteGraphPointerCodec, MultiWritePointer);
 address_pointer_codec!(OriginalGraphPointerCodec, OriginalPointer);
 address_pointer_codec!(RecursiveGraphPointerCodec, RecursivePointer);
+
+/// Graph-pointer codec for the balanced pointer, whose handle is one address.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BalancedGraphPointerCodec;
+
+impl GraphPointerCodec<BalancedPointer> for BalancedGraphPointerCodec {
+    fn identifier(&self, pointer: &BalancedPointer) -> Result<u64, SamError> {
+        oblivious_identifier(pointer.head())
+    }
+
+    fn decode_identifier(&self, identifier: u64) -> Result<BalancedPointer, SamError> {
+        Ok(BalancedPointer::from_head(Address::Oblivious(
+            checked_identifier(identifier)?,
+        )))
+    }
+}
 
 /// Graph-pointer codec retaining the separately configured r-ary pointer fanout.
 #[derive(Clone, Copy, Debug)]

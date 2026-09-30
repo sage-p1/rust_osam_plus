@@ -15,6 +15,14 @@ pub enum PointerKind {
     MultiWriteRary { branching_factor: usize },
     /// Reference-counted multi-read/multi-write pointer.
     Recursive,
+    /// Complete b-ary multi-write pointer tree with downward pointers
+    /// (`pointer::BalancedPointers`). With `buffered_writes`, writes are
+    /// buffered and flushed in public batches and only reads are charged, as
+    /// for the r-ary pointer; otherwise every write is a round trip.
+    Balanced {
+        branching_factor: usize,
+        buffered_writes: bool,
+    },
 }
 
 impl PointerKind {
@@ -28,6 +36,13 @@ impl PointerKind {
                 Ok(Self::MultiWriteRary { branching_factor })
             }
             "recursive" => Ok(Self::Recursive),
+            "balanced" | "balancedrary" => {
+                super::BalancedPointers::new(branching_factor)?;
+                Ok(Self::Balanced {
+                    branching_factor,
+                    buffered_writes: label == "balancedrary",
+                })
+            }
             _ => Err(SamError::InvalidParameter("unknown smart-pointer label")),
         }
     }
@@ -36,7 +51,9 @@ impl PointerKind {
     pub fn access_policy(self) -> AccessPolicy {
         match self {
             Self::Original => AccessPolicy::SINGLE_WRITE,
-            Self::MultiWrite | Self::MultiWriteRary { .. } => AccessPolicy::MULTI_WRITE,
+            Self::MultiWrite | Self::MultiWriteRary { .. } | Self::Balanced { .. } => {
+                AccessPolicy::MULTI_WRITE
+            }
             Self::Recursive => AccessPolicy::RECURSIVE,
         }
     }
@@ -44,7 +61,11 @@ impl PointerKind {
     /// Cryptographic access strategy used after the dry-run handoff.
     pub fn access_strategy(self) -> AccessStrategy {
         match self {
-            Self::MultiWriteRary { .. } => AccessStrategy::MULTI_WRITE_RARY,
+            Self::MultiWriteRary { .. }
+            | Self::Balanced {
+                buffered_writes: true,
+                ..
+            } => AccessStrategy::MULTI_WRITE_RARY,
             _ => AccessStrategy::STANDARD,
         }
     }
@@ -70,6 +91,10 @@ impl PointerHandle for RaryPointer {
 
 impl PointerHandle for RecursivePointer {
     const LABEL: &'static str = "recursive";
+}
+
+impl PointerHandle for super::BalancedPointer {
+    const LABEL: &'static str = "balanced";
 }
 
 /// Backend-neutral operations used by native graph data structures.

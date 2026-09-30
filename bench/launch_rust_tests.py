@@ -47,6 +47,14 @@ Differences from the Python launcher:
   (bs - 16) / 8 = 6, flagged ``layout=python-sized`` in logs, log names
   (``_layout-python``) and the report; ``--exact-original-only`` skips them
   instead. Crypto jobs that cannot fit are always skipped.
+* ``--pointers balanced balancedrary`` (opt-in, not in the default matrix)
+  runs the complete pointer tree with downward pointers: ``balanced`` is
+  binary with every write a round trip (compare with ``multiwrite``, OSAM+);
+  ``balancedrary`` uses the r-ary default fanout with buffered writes and is
+  charged reads only (compare with ``multiwriterary``, BOSAM). At bs = 64 the
+  root's extra metadata leaves fewer than two edge slots, so dry-run jobs use
+  multiwrite's record layout (``layout=python-sized``); crypto jobs there are
+  skipped.
 * ``--no-crypto`` turns cryptography off for every job, whatever ``--mode``.
 * ER graphs are generated once per (n, d, seed, generator) into
   ``bench/graphs/`` by a background process pool and reused by every job and
@@ -112,6 +120,11 @@ BLOCK_SIZES = local.BLOCK_SIZES
 DEGREES = local.DEGREES
 POWERS = local.POWERS
 POINTERS = local.POINTERS
+# Opt-in pointers (not in the default matrix): the complete tree with downward
+# pointers, binary with every write a round trip (compare with multiwrite) and
+# r-ary with buffered writes, charged reads only (compare with multiwriterary).
+EXTRA_POINTERS = ("balanced", "balancedrary")
+READS_ONLY_POINTERS = ("multiwriterary", "balancedrary")
 MAX_ER_WORKLOAD = local.MAX_ER_WORKLOAD
 ALGORITHMS = local.ALGORITHMS  # rw cd pr dfs bfs dijkstra prim dtc, in this order
 MAX_STEPS = local.MAX_STEPS
@@ -335,18 +348,28 @@ class BlockFitProbe:
         if key in self.cache:
             return self.cache[key]
         self._write_graph()
-        if pointer == "multiwriterary":
+        if pointer in ("multiwriterary", "balancedrary"):
             default = default_pointer_branching_factor(bs)
             first = default - (default % 2)
             error = "no even branching factor >= 2 is available"
             result = None
             for bf in range(first, 1, -2):
                 error = self._try(bs, pointer, cache, mode, bf) or ""
+                if error and pointer == "balancedrary" and mode == "dry-run" and PRETEND_ORIGINAL_FITS:
+                    if self._try(bs, pointer, cache, mode, bf, pretend=True) is None:
+                        result = Feasibility(True, bf, error, python_layout=True)
+                        print(
+                            f"bs={bs} cache={str(cache).lower()} mode=dry-run: balancedrary root "
+                            f"metadata does not fit ({error}); using multiwrite's layout "
+                            "(layout=python-sized)",
+                            flush=True,
+                        )
+                        break
                 if not error:
                     result = Feasibility(True, bf)
                     if bf != default:
                         print(
-                            f"bs={bs} cache={str(cache).lower()} mode={mode}: multiwriterary "
+                            f"bs={bs} cache={str(cache).lower()} mode={mode}: {pointer} "
                             f"branching factor lowered {default} -> {bf} to fit the block",
                             flush=True,
                         )
@@ -356,14 +379,18 @@ class BlockFitProbe:
         else:
             error = self._try(bs, pointer, cache, mode, None)
             result = Feasibility(error is None, None, error or "")
-            if error and pointer == "original" and mode == "dry-run" and PRETEND_ORIGINAL_FITS:
+            if (error and pointer in ("original", "balanced") and mode == "dry-run"
+                    and PRETEND_ORIGINAL_FITS):
                 # Encrypted blocks must fit; the in-memory dry run does not
-                # encode, so model the oversized records with Python's fanout.
+                # encode, so model the oversized records with Python's fanout
+                # (original) or multiwrite's layout (balanced root metadata).
                 if self._try(bs, pointer, cache, mode, None, pretend=True) is None:
                     result = Feasibility(True, None, error, python_layout=True)
+                    layout = (f"Python's fanout {max(bs - 16, 0) // 8}" if pointer == "original"
+                              else "multiwrite's layout")
                     print(
-                        f"bs={bs} cache={str(cache).lower()} mode=dry-run: original does not fit "
-                        f"({error}); using Python's fanout {max(bs - 16, 0) // 8} (layout=python-sized)",
+                        f"bs={bs} cache={str(cache).lower()} mode=dry-run: {pointer} does not fit "
+                        f"({error}); using {layout} (layout=python-sized)",
                         flush=True,
                     )
         self.cache[key] = result
@@ -864,7 +891,7 @@ def charge(pointer: str | None) -> str:
     reads and writes alike. The ``reads`` and ``writes`` columns are always
     reported separately.
     """
-    return "reads" if pointer == "multiwriterary" else "reads+writes"
+    return "reads" if pointer in READS_ONLY_POINTERS else "reads+writes"
 
 
 def is_current_log(path: Path) -> bool:
@@ -955,12 +982,12 @@ def print_report(rows: list[dict[str, Any]], limit: int | None = None) -> None:
         "\nFull-length runs only ('tries': start draws for all trials, at most 1000; FAILED: "
         "no full-length run, !: fewer full-length runs than requested); per-step costs are per-run costs / "
         "run length. Round trips = reads + writes, except reads only for multiwriterary "
-        "(BOSAM: its writes are buffered and evicted in batches)."
+        "and balancedrary (their writes are buffered and evicted in batches)."
     )
     if any(row.get("layout") == "python-sized" for row in rows):
         print(
             "* layout=python-sized: dry-run only; these records do not fit the block and use "
-            "Python's edge fanout (bs - 16) / 8."
+            "Python's edge fanout (bs - 16) / 8 (original) or multiwrite's layout (balanced)."
         )
 
 
@@ -989,7 +1016,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-existing", action="store_true", help="Skip jobs whose log is already complete.")
     parser.add_argument("--report-only", action="store_true", help="Rebuild summary.csv from existing logs and exit.")
     parser.add_argument("--block-sizes", type=int, nargs="+", default=list(BLOCK_SIZES))
-    parser.add_argument("--pointers", nargs="+", choices=POINTERS, default=list(POINTERS))
+    parser.add_argument(
+        "--pointers", nargs="+", choices=POINTERS + EXTRA_POINTERS, default=list(POINTERS),
+        help="default: " + " ".join(POINTERS) + "; also available: " + " ".join(EXTRA_POINTERS),
+    )
     parser.add_argument("--degrees", type=int, nargs="+", default=list(DEGREES))
     parser.add_argument("--trials", type=int, default=TRIALS, help=f"Trials for cd and pr (default {TRIALS}).")
     parser.add_argument(

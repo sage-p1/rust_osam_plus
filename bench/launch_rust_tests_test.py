@@ -107,6 +107,15 @@ class RustLauncherTest(unittest.TestCase):
         bfs = [record for record in rary_structures if record["phase"] == "bfs"]
         self.assertEqual(bfs[0]["roundtrips"], 22)  # the fixture's 22 reads
 
+    def test_balanced_pointers_are_opt_in_and_charged_like_their_counterparts(self) -> None:
+        self.assertNotIn("balanced", rust.POINTERS)
+        self.assertEqual(rust.charge("balanced"), "reads+writes")
+        self.assertEqual(rust.charge("balancedrary"), "reads")
+        self.assertEqual(rust.cache_settings("balanced", None), (True,))
+        self.assertEqual(rust.cache_settings("balancedrary", None), (True,))
+        args = rust.parse_arguments(["--pointers", "balanced", "balancedrary"])
+        self.assertEqual(args.pointers, ["balanced", "balancedrary"])
+
     def test_old_per_step_logs_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "old.log"

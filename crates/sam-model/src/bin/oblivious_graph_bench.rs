@@ -39,8 +39,10 @@ use sam_model::{
         CachedPointer, CachedPointers, FixedSizeCodec, MultiWriteCell, MultiWriteCellValueCodec,
         MultiWritePointer, MultiWritePointers, OriginalCell, OriginalCellValueCodec,
         OriginalPointer, OriginalPointers, PointerKind, RaryCell, RaryCellValueCodec, RaryPointer,
-        RaryPointers, RecursivePointer, RecursivePointers,
+        RaryPointers, RecursivePointer, RecursivePointers, BalancedCell, BalancedCellValueCodec,
+        BalancedPointer, BalancedPointers,
     },
+    BalancedGraphPointerCodec,
     BlockCodec, CachedGraphPointerCodec, DryRunSam, GraphBackend, GraphInput, GraphLayout,
     GraphObject, GraphValueCodec, MultiWriteGraphPointerCodec, NoMovePointers, ObliviousGraph,
     OperationCounts, OriginalGraphPointerCodec, PathOsamSam, RaryGraphPointerCodec,
@@ -356,6 +358,100 @@ fn run_with_output(config: &Config, input: &GraphInput, out: &mut dyn Write) -> 
                     kind,
                     FixedSizeCodec::new(RaryCellValueCodec::new(GraphValueCodec::new(
                         RaryGraphPointerCodec::new(pointer_bf),
+                        layout.graph_branching_factor(),
+                    )?)),
+                )?
+            }
+        }
+        "balanced" | "balancedrary" => {
+            // `balanced`: binary by default and unbuffered, every write a round
+            // trip (compare with multiwrite). `balancedrary`: the r-ary default
+            // fanout with buffered writes, charged reads only (compare with
+            // multiwriterary).
+            let buffered = config.pointer == "balancedrary";
+            let b = if buffered {
+                pointer_bf
+            } else {
+                config.pointer_branching_factor.unwrap_or(2)
+            };
+            let kind = PointerKind::Balanced {
+                branching_factor: b,
+                buffered_writes: buffered,
+            };
+            // The root's alias count, height and child-list address (9 bytes
+            // more than multiwrite's) can leave fewer than two outgoing-edge
+            // slots at small blocks. Dry-run only: the in-memory SAM never
+            // encodes blocks, so lay the records out as for multiwrite (the
+            // same fanout as OSAM+).
+            let layout = match GraphLayout::for_pointer_kind(config.block_size, kind) {
+                Ok(layout) if layout.graph_branching_factor() >= 2 => layout,
+                Ok(_) | Err(_) if config.pretend_original_fits => {
+                    GraphLayout::for_pointer_kind(config.block_size, PointerKind::MultiWrite)?
+                        .marked_inexact()
+                }
+                Ok(_) => {
+                    return Err(SamError::Backend(format!(
+                        "block size {} leaves fewer than two outgoing-edge slots after the \
+                         balanced pointer's root metadata",
+                        config.block_size
+                    ))
+                    .into())
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let backend = if buffered {
+                BalancedPointers::new(b)?
+            } else {
+                BalancedPointers::new(b)?.unbuffered()
+            };
+            if config.no_move {
+                run_selected::<Tagged<BalancedPointer>, _, _>(
+                    config,
+                    input,
+                    out,
+                    layout,
+                    NoMovePointers::new(backend),
+                    DryRunSam::<BalancedCell<GraphObject<Tagged<BalancedPointer>>>>::new(
+                        kind.access_policy(),
+                    ),
+                    Some(b),
+                    kind,
+                    FixedSizeCodec::new(BalancedCellValueCodec::new(GraphValueCodec::new(
+                        TaggedGraphPointerCodec::new(BalancedGraphPointerCodec),
+                        layout.graph_branching_factor(),
+                    )?)),
+                )?
+            } else if config.cache {
+                run_selected::<CachedPointer<BalancedPointer>, _, _>(
+                    config,
+                    input,
+                    out,
+                    layout,
+                    CachedPointers::new(backend),
+                    DryRunSam::<BalancedCell<GraphObject<CachedPointer<BalancedPointer>>>>::new(
+                        kind.access_policy(),
+                    ),
+                    Some(b),
+                    kind,
+                    FixedSizeCodec::new(BalancedCellValueCodec::new(GraphValueCodec::new(
+                        CachedGraphPointerCodec::new(BalancedGraphPointerCodec),
+                        layout.graph_branching_factor(),
+                    )?)),
+                )?
+            } else {
+                run_selected::<BalancedPointer, _, _>(
+                    config,
+                    input,
+                    out,
+                    layout,
+                    backend,
+                    DryRunSam::<BalancedCell<GraphObject<BalancedPointer>>>::new(
+                        kind.access_policy(),
+                    ),
+                    Some(b),
+                    kind,
+                    FixedSizeCodec::new(BalancedCellValueCodec::new(GraphValueCodec::new(
+                        BalancedGraphPointerCodec,
                         layout.graph_branching_factor(),
                     )?)),
                 )?
@@ -1206,7 +1302,11 @@ fn read_graph(path: &str) -> Result<GraphInput, Box<dyn std::error::Error>> {
 const HELP: &str = "\
 oblivious_graph_bench --graph FILE --bs BYTES --pt POINTER [options]
 
-  --pt original|multiwrite|multiwriterary|recursive
+  --pt original|multiwrite|multiwriterary|recursive|balanced|balancedrary
+                      balanced: complete binary tree with downward pointers, every
+                      write a round trip (b = --pointer-branching-factor, default 2);
+                      balancedrary: the same with the r-ary default fanout and
+                      buffered writes (charged reads only, like multiwriterary)
   --alg LIST          comma-separated ALG[:TRIALS]; may be repeated. ALG is one of
                       build rw bfs dfs dijkstra prim cd dtc pr. The graph is built
                       once and the algorithms run in order. Default: rw
@@ -1230,8 +1330,9 @@ oblivious_graph_bench --graph FILE --bs BYTES --pt POINTER [options]
                       move + put (the paper's OSAM and ORAM series)
   --dry-run | --crypto [--stash-size N]   in-memory SAM (default) or Path OSAM+
   --pretend-original-fits   dry-run only: if `original` records cannot fit the block,
-                      use Python's edge fanout (bs - 16) / 8 instead of failing;
-                      the config record then reports layout=python-sized
+                      use Python's edge fanout (bs - 16) / 8 instead of failing; if
+                      `balanced` root cells cannot fit, use multiwrite's layout. The
+                      config record then reports layout=python-sized
   --build static|dynamic   build in one bulk pass (default) or by add_vertex/add_edge
                       calls in input order; both give the same graph
   --prime             after the build, run vertices/10 random walks of 50 steps
