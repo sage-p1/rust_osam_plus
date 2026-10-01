@@ -1,5 +1,6 @@
 //! Oblivious data structures stored directly in SAM, ported from the Python
-//! implementation (`smart_queue.py`, `smart_stack.py`, `smart_avl_tree.py`).
+//! implementation (`smart_queue.py`, `smart_stack.py`, `smart_avl_tree.py`), plus an
+//! opt-in B-tree ([`btree::SmartBTree`]) with no Python counterpart.
 //!
 //! As in Python, which has one global SAM, their entries live in the same SAM
 //! as the smart pointers: each entry is a *raw* cell of the pointer backend
@@ -9,7 +10,10 @@
 
 use crate::Address;
 
+pub use btree::{BTreeNode, SmartBTree};
+
 pub mod avl;
+pub mod btree;
 pub mod queue;
 pub mod stack;
 

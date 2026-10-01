@@ -20,7 +20,7 @@ use crate::{
         BalancedPointer, CachedPointer, MultiWritePointer, OriginalPointer, PointerKind,
         RaryPointer, RawValueCells, RecursivePointer, ValueCodec,
     },
-    structures::{AvlKey, AvlNode, Item, QueueEntry, StackEntry},
+    structures::{AvlKey, AvlNode, BTreeNode, Item, QueueEntry, StackEntry},
     Address, SamError,
 };
 use std::collections::BTreeSet;
@@ -301,6 +301,8 @@ pub enum GraphObject<P> {
     Stack(StackEntry<P>),
     /// A raw `SmartAVLTree` node.
     Avl(Box<AvlNode<P>>),
+    /// A raw `SmartBTree` node.
+    BTree(Box<BTreeNode<P>>),
 }
 
 /// Converts a client pointer handle to one persisted eight-byte identifier.
@@ -418,6 +420,33 @@ pub struct GraphValueCodec<C> {
     graph_branching_factor: usize,
 }
 
+fn put_avl_key(key: &AvlKey, output: &mut Vec<u8>) {
+    match key {
+        AvlKey::Hash(hash) => {
+            output.push(0);
+            output.extend_from_slice(hash);
+        }
+        AvlKey::Int(key) => {
+            output.push(1);
+            output.extend_from_slice(&key.to_le_bytes());
+        }
+    }
+}
+
+fn get_avl_key(input: &mut &[u8]) -> Result<AvlKey, SamError> {
+    match get_u8(input)? {
+        0 => {
+            let mut hash = [0_u8; 32];
+            for byte in &mut hash {
+                *byte = get_u8(input)?;
+            }
+            Ok(AvlKey::Hash(hash))
+        }
+        1 => Ok(AvlKey::Int(get_i64(input)?)),
+        _ => Err(SamError::Backend("invalid AVL key tag".into())),
+    }
+}
+
 impl<C> GraphValueCodec<C> {
     pub fn new(pointers: C, graph_branching_factor: usize) -> Result<Self, SamError> {
         if graph_branching_factor == 0 {
@@ -478,16 +507,7 @@ impl<P, C: GraphPointerCodec<P>> ValueCodec<GraphObject<P>> for GraphValueCodec<
             }
             GraphObject::Avl(node) => {
                 output.push(5);
-                match &node.key {
-                    AvlKey::Hash(hash) => {
-                        output.push(0);
-                        output.extend_from_slice(hash);
-                    }
-                    AvlKey::Int(key) => {
-                        output.push(1);
-                        output.extend_from_slice(&key.to_le_bytes());
-                    }
-                }
+                put_avl_key(&node.key, output);
                 self.put_item(&node.value, output)?;
                 for child in node.children {
                     put_u64(
@@ -507,6 +527,25 @@ impl<P, C: GraphPointerCodec<P>> ValueCodec<GraphObject<P>> for GraphValueCodec<
                 }
                 put_small(node.left_balance, output)?;
                 put_small(node.right_balance, output)?;
+            }
+            GraphObject::BTree(node) => {
+                let count = u16::try_from(node.keys.len())
+                    .map_err(|_| SamError::Backend("B-tree node has too many keys".into()))?;
+                if node.values.len() != node.keys.len()
+                    || !(node.children.is_empty() || node.children.len() == node.keys.len() + 1)
+                {
+                    return Err(SamError::Backend("malformed B-tree node".into()));
+                }
+                output.push(6);
+                output.extend_from_slice(&count.to_le_bytes());
+                output.push(u8::from(node.children.is_empty()));
+                for (key, value) in node.keys.iter().zip(&node.values) {
+                    put_avl_key(key, output);
+                    self.put_item(value, output)?;
+                }
+                for &child in &node.children {
+                    put_u64(address_identifier(child)?, output);
+                }
             }
         }
         Ok(())
@@ -544,17 +583,7 @@ impl<P, C: GraphPointerCodec<P>> ValueCodec<GraphObject<P>> for GraphValueCodec<
                 value: self.get_item(input)?,
             })),
             5 => {
-                let key = match get_u8(input)? {
-                    0 => {
-                        let mut hash = [0_u8; 32];
-                        for byte in &mut hash {
-                            *byte = get_u8(input)?;
-                        }
-                        AvlKey::Hash(hash)
-                    }
-                    1 => AvlKey::Int(get_i64(input)?),
-                    _ => return Err(SamError::Backend("invalid AVL key tag".into())),
-                };
+                let key = get_avl_key(input)?;
                 let value = self.get_item(input)?;
                 let children = [
                     identifier_address(get_u64(input)?)?,
@@ -576,6 +605,29 @@ impl<P, C: GraphPointerCodec<P>> ValueCodec<GraphObject<P>> for GraphValueCodec<
                     balance,
                     left_balance: get_small(input)?,
                     right_balance: get_small(input)?,
+                })))
+            }
+            6 => {
+                let count = usize::from(u16::from_le_bytes([get_u8(input)?, get_u8(input)?]));
+                let leaf = get_bool(input)?;
+                let mut keys = Vec::with_capacity(count);
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    keys.push(get_avl_key(input)?);
+                    values.push(self.get_item(input)?);
+                }
+                let mut children = Vec::new();
+                if !leaf {
+                    for _ in 0..=count {
+                        children.push(identifier_address(get_u64(input)?)?.ok_or_else(|| {
+                            SamError::Backend("B-tree inner node without a child".into())
+                        })?);
+                    }
+                }
+                Ok(GraphObject::BTree(Box::new(BTreeNode {
+                    keys,
+                    values,
+                    children,
                 })))
             }
             _ => Err(SamError::Backend("invalid graph object tag".into())),
@@ -944,7 +996,7 @@ mod tests {
             }),
             GraphObject::Avl(Box::new(AvlNode {
                 key: AvlKey::Int(i64::MAX),
-                value: Item::Pointer(pointer),
+                value: Item::Pointer(pointer.clone()),
                 children: [Some(Address::Oblivious(9)), None],
                 height: 2,
                 left_height: 1,
@@ -952,6 +1004,16 @@ mod tests {
                 balance: 1,
                 left_balance: Some(0),
                 right_balance: None,
+            })),
+            GraphObject::BTree(Box::new(BTreeNode {
+                keys: vec![AvlKey::Int(-4)],
+                values: vec![Item::Pointer(pointer.clone())],
+                children: vec![Address::Oblivious(2), Address::Oblivious(3)],
+            })),
+            GraphObject::BTree(Box::new(BTreeNode {
+                keys: vec![AvlKey::Hash([7; 32])],
+                values: vec![Item::None],
+                children: Vec::new(),
             })),
             GraphObject::Deleted(DeletedObject { id: Some(3) }),
         ]
@@ -965,6 +1027,50 @@ mod tests {
         for cell in cells {
             let block: [u8; B] = codec.encode(&cell).unwrap();
             assert_eq!(codec.decode(&block).unwrap(), cell);
+        }
+    }
+
+    /// `SmartBTree::fanout_for_block` relies on this size formula.
+    #[test]
+    fn btree_nodes_encode_to_the_documented_size() {
+        use crate::structures::btree::{bytes_per_key, NODE_OVERHEAD_BYTES};
+        let codec = FixedSizeCodec::new(MultiWriteCellValueCodec::new(
+            GraphValueCodec::new(MultiWriteGraphPointerCodec, 2).unwrap(),
+        ));
+        let pointer = MultiWritePointer::from_persisted_head(Address::Oblivious(77));
+        for hashed in [true, false] {
+            let fanout = crate::structures::SmartBTree::fanout_for_block(4096, hashed);
+            let keys = fanout - 1;
+            let key = |i: usize| {
+                if hashed {
+                    AvlKey::Hash([i as u8; 32])
+                } else {
+                    AvlKey::Int(i as i64)
+                }
+            };
+            let node = GraphObject::BTree(Box::new(BTreeNode {
+                keys: (0..keys).map(key).collect(),
+                values: (0..keys).map(|_| Item::Pointer(pointer)).collect(),
+                children: (0..=keys)
+                    .map(|i| Address::Oblivious(i as u64 + 1))
+                    .collect(),
+            }));
+            let cell = MultiWriteCell::Root(node);
+            let block: [u8; 4096] = codec.encode(&cell).unwrap();
+            assert_eq!(codec.decode(&block).unwrap(), cell);
+            assert!(NODE_OVERHEAD_BYTES + keys * bytes_per_key(hashed) <= 4096);
+            // One more key no longer fits.
+            let mut wider = cell.clone();
+            if let MultiWriteCell::Root(GraphObject::BTree(n)) = &mut wider {
+                n.keys.push(key(keys));
+                n.values.push(Item::Int(0));
+                n.children.push(Address::Oblivious(9999));
+            }
+            let fits: Result<[u8; 4096], _> = codec.encode(&wider);
+            assert!(
+                fits.is_err(),
+                "fanout_for_block({hashed}) is not the widest fit"
+            );
         }
     }
 
