@@ -46,7 +46,8 @@ class RustLauncherTest(unittest.TestCase):
     def test_report_is_per_full_length_run_and_amortized_per_step(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "job.log"
-            log.write_text("\n".join(log_lines(pointer="multiwrite")) + "\n")
+            # OSAM (original) is charged reads + writes.
+            log.write_text("\n".join(log_lines(pointer="original")) + "\n")
             rows = rust.report_rows(rust.parse_log(log), log)
         (row,) = rows
         self.assertEqual((row["alg"], row["trials"], row["attempts"], row["length"]), ("bfs", 2, 3, 4))
@@ -57,6 +58,20 @@ class RustLauncherTest(unittest.TestCase):
         self.assertEqual(row["rejected_roundtrips"], 6)
         self.assertEqual(row["mean_ms_per_trial"], 2.0)
         self.assertIsNone(row["oram_levels"])  # not a recursive job
+
+    def test_crypto_stash_maxima_are_reported(self) -> None:
+        lines = [line.replace("installation_maximum_stash=none", "installation_maximum_stash=3 read_evictions=2")
+                 .replace("maximum_stash=none", "maximum_stash=7 all_maximum_stash=9")
+                 .replace("stash_peak=none", "stash_peak=7")
+                 for line in log_lines(pointer="multiwrite")]
+        lines.insert(3, "dynamic ops=4 add_vertex=1 add_edge=1 delete_edge=1 delete_vertex=1 allocations=1 "
+                        "reads=1 writes=1 nanos=1 tombstones=1 maximum_stash=5")
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "job.log"
+            log.write_text("\n".join(lines) + "\n")
+            (row,) = rust.report_rows(rust.parse_log(log), log)
+        self.assertEqual((row["installation_max_stash"], row["max_stash_peak"], row["max_stash_all"],
+                          row["dynamic_max_stash"], row["read_evictions"]), (3, 7, 9, 5, 2))
 
     def test_failed_algorithms_get_a_row_without_costs(self) -> None:
         lines = log_lines()[:3] + [
@@ -90,7 +105,7 @@ class RustLauncherTest(unittest.TestCase):
             rows = rust.write_report(root, root / "summary.csv")
         self.assertEqual({row["log"] for row in rows}, {"new.log"})
 
-    def test_rary_is_charged_reads_only(self) -> None:
+    def test_rary_and_osam_plus_are_charged_reads_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "job.log"
             log.write_text("\n".join(log_lines(pointer="multiwriterary")) + "\n")
@@ -98,12 +113,17 @@ class RustLauncherTest(unittest.TestCase):
             rary_structures = rust.structure_rows(rust.parse_log(log), log)
             log.write_text("\n".join(log_lines(pointer="multiwrite")) + "\n")
             (multiwrite,) = rust.report_rows(rust.parse_log(log), log)
-        self.assertEqual((rary["charge"], multiwrite["charge"]), ("reads", "reads+writes"))
+            log.write_text("\n".join(log_lines(pointer="original")) + "\n")
+            (original,) = rust.report_rows(rust.parse_log(log), log)
+        # OSAM+ keeps its writes in the stash and evicts on reads, like BOSAM.
+        self.assertEqual((rary["charge"], multiwrite["charge"], original["charge"]),
+                         ("reads", "reads", "reads+writes"))
+        self.assertEqual(multiwrite["mean_roundtrips_per_trial"], 11.0)
         # Mean reads 11 per run over 4 steps; reads + writes would be 22.
         self.assertEqual(rary["mean_roundtrips_per_trial"], 11.0)
         self.assertEqual(rary["mean_roundtrips_per_step"], 2.75)
         self.assertAlmostEqual(rary["sd_roundtrips_per_trial"], 2.0 ** 0.5)
-        self.assertEqual(multiwrite["mean_roundtrips_per_trial"], 22.0)
+        self.assertEqual(original["mean_roundtrips_per_trial"], 22.0)
         bfs = [record for record in rary_structures if record["phase"] == "bfs"]
         self.assertEqual(bfs[0]["roundtrips"], 22)  # the fixture's 22 reads
 

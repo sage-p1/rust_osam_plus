@@ -7,11 +7,11 @@
 //!
 //! ```text
 //! config impl=native mode=dry-run pointer=multiwriterary cache=false move=true block_size=4096 ... build=static prime=false dynamic_ops=0
-//! build allocations=.. reads=.. writes=.. flushes=.. nanos=.. install_nanos=.. installation_maximum_stash=..
+//! build allocations=.. reads=.. writes=.. flushes=.. nanos=.. install_nanos=.. installation_maximum_stash=.. read_evictions=..
 //! prime walks=.. allocations=.. reads=.. writes=.. nanos=..            (with --prime)
-//! dynamic ops=.. add_vertex=.. add_edge=.. delete_edge=.. delete_vertex=.. allocations=.. reads=.. writes=.. nanos=.. tombstones=..   (with --dynamic-ops N)
+//! dynamic ops=.. add_vertex=.. add_edge=.. delete_edge=.. delete_vertex=.. allocations=.. reads=.. writes=.. nanos=.. tombstones=.. maximum_stash=..   (with --dynamic-ops N)
 //! trial alg=bfs index=0 start=.. attempts=.. allocations=.. reads=.. writes=.. roundtrips=.. nanos=.. size=.. cost=none stash_peak=none
-//! algorithm alg=bfs status=ok trials=50 requested=50 attempts=.. length=100 allocations=.. reads=.. writes=.. nanos=.. mean_allocations=.. var_allocations=.. ... mean_roundtrips=.. var_roundtrips=.. rejected_allocations=.. rejected_roundtrips=.. maximum_stash=.. maximum_cached_values=.. cache_cleared=..
+//! algorithm alg=bfs status=ok trials=50 requested=50 attempts=.. length=100 allocations=.. reads=.. writes=.. nanos=.. mean_allocations=.. var_allocations=.. ... mean_roundtrips=.. var_roundtrips=.. rejected_allocations=.. rejected_roundtrips=.. maximum_stash=.. all_maximum_stash=.. maximum_cached_values=.. cache_cleared=..
 //! structure phase=bfs name=RaryMultiWritePointer allocations=.. reads=.. writes=.. roundtrips=..
 //!           (phases: build, prime, dynamic, then one per algorithm)
 //! done
@@ -116,6 +116,8 @@ struct BuildInfo {
     nanos: u128,
     install_nanos: Option<u128>,
     installation_maximum_stash: Option<u64>,
+    /// Eviction paths per read on the encrypted tree (crypto mode only).
+    read_evictions: Option<usize>,
     /// Priming measurements (`--prime`), taken on the build SAM.
     prime: Option<Phase>,
 }
@@ -617,14 +619,51 @@ where
     B: GraphBackend<P>,
     C: BlockCodec<B::Cell, BLOCK>,
 {
-    let (mut graph, mut build) = build_graph(config, input, layout, &mut backend, &mut dry)?;
+    let (graph, build) = build_graph(config, input, layout, &mut backend, &mut dry)?;
+    // OSAM+ (multiwrite) keeps its writes in the stash and evicts two paths
+    // on every read; BOSAM evicts one per read plus its public flushes; the
+    // other pointers evict one path on every read and every write.
+    if kind == PointerKind::MultiWrite {
+        install_and_run::<P, B, C, BLOCK, 2>(
+            config, input, out, layout, pointer_branching_factor, kind, codec, backend, dry,
+            graph, build,
+        )
+    } else {
+        install_and_run::<P, B, C, BLOCK, 1>(
+            config, input, out, layout, pointer_branching_factor, kind, codec, backend, dry,
+            graph, build,
+        )
+    }
+}
+
+/// Installs the dry-run memory into an encrypted Path OSAM+ tree that evicts
+/// `PATHS` paths per multi-path read, then runs the trials on it.
+#[allow(clippy::too_many_arguments)]
+fn install_and_run<P, B, C, const BLOCK: usize, const PATHS: usize>(
+    config: &Config,
+    input: &GraphInput,
+    out: &mut dyn Write,
+    layout: GraphLayout,
+    pointer_branching_factor: Option<usize>,
+    kind: PointerKind,
+    codec: C,
+    mut backend: B,
+    dry: DryRunSam<B::Cell>,
+    mut graph: ObliviousGraph<P>,
+    mut build: BuildInfo,
+) -> BenchResult<()>
+where
+    P: Clone,
+    B: GraphBackend<P>,
+    C: BlockCodec<B::Cell, BLOCK>,
+{
     let install_clock = Instant::now();
     let snapshot = dry.snapshot();
     let allocated = snapshot.next_identifier.saturating_sub(1).max(2);
     let block_capacity = allocated
         .checked_next_power_of_two()
         .ok_or_else(|| SamError::Backend("OSAM block capacity overflow".into()))?;
-    let mut encrypted = PathOsamSam::<B::Cell, _, BLOCK, 4, 1>::from_snapshot(
+    let mut encrypted = PathOsamSam::<B::Cell, _, BLOCK, 4, PATHS>::from_snapshot(
         snapshot,
         block_capacity,
         config.stash_size,
@@ -638,6 +677,7 @@ where
     .with_policy_checks(config.check_sam_policy);
     build.install_nanos = Some(install_clock.elapsed().as_nanos());
     build.installation_maximum_stash = Some(encrypted.build_max_stash_occupancy());
+    build.read_evictions = Some(PATHS);
     run_trials(
         config,
         input,
@@ -678,6 +718,7 @@ where
         nanos: clock.elapsed().as_nanos(),
         install_nanos: None,
         installation_maximum_stash: None,
+        read_evictions: None,
         prime: None,
     };
     if config.prime {
@@ -973,7 +1014,7 @@ where
     writeln!(
         out,
         "build allocations={} reads={} writes={} flushes={} nanos={} install_nanos={} \
-         installation_maximum_stash={}",
+         installation_maximum_stash={} read_evictions={}",
         build.operations.allocations,
         build.operations.reads,
         build.operations.writes,
@@ -981,6 +1022,7 @@ where
         build.nanos,
         opt(build.install_nanos),
         opt(build.installation_maximum_stash),
+        opt(build.read_evictions),
     )?;
     write_structures(out, "build", &build.structures, &BTreeMap::new())?;
     if let Some(prime) = &build.prime {
@@ -1000,6 +1042,7 @@ where
     let mut workload = Workload::new(input);
     if config.dynamic_ops > 0 {
         backend.clear_cache()?;
+        sam.reset_stash_maximum();
         let before = sam.stats().operations;
         let structures_before = sam.stats().by_structure.clone();
         let clock = Instant::now();
@@ -1009,7 +1052,7 @@ where
         writeln!(
             out,
             "dynamic ops={} add_vertex={} add_edge={} delete_edge={} delete_vertex={} \
-             allocations={} reads={} writes={} nanos={nanos} tombstones={}",
+             allocations={} reads={} writes={} nanos={nanos} tombstones={} maximum_stash={}",
             config.dynamic_ops,
             counts.add_vertex,
             counts.add_edge,
@@ -1019,6 +1062,7 @@ where
             operations.reads,
             operations.writes,
             graph.tombstones(),
+            opt(sam.stats().stash.map(|stash| stash.maximum)),
         )?;
         write_structures(
             out,
@@ -1052,6 +1096,9 @@ where
         let mut structures: BTreeMap<&'static str, StructureStats> = BTreeMap::new();
         let mut nanos_total = 0;
         let mut maximum_stash: Option<u64> = None;
+        // Also over rejected attempts: they run on the same SAM, so the stash
+        // must hold whatever they leave in it.
+        let mut all_maximum_stash: Option<u64> = None;
         // Rejection sampling: only full-length runs are measured, so a run's
         // fixed costs (the start lookup, final deletions) are amortized over
         // the same number of steps in every trial. At most MAX_ATTEMPTS runs
@@ -1080,6 +1127,11 @@ where
             )?;
             let nanos = clock.elapsed().as_nanos();
             let run = delta(sam.stats().operations, before);
+            let stash_peak = sam.stats().stash.map(|stash| stash.maximum);
+            if let Some(peak) = stash_peak {
+                all_maximum_stash =
+                    Some(all_maximum_stash.map_or(peak, |maximum| maximum.max(peak)));
+            }
             if !outcome.full {
                 rejected = add(rejected, run);
                 if config.start.is_some() && algorithm != "rw" {
@@ -1097,7 +1149,6 @@ where
                 total.reads += stats.reads - base.reads;
                 total.writes += stats.writes - base.writes;
             }
-            let stash_peak = sam.stats().stash.map(|stash| stash.maximum);
             if let Some(peak) = stash_peak {
                 maximum_stash = Some(maximum_stash.map_or(peak, |maximum| maximum.max(peak)));
             }
@@ -1140,7 +1191,7 @@ where
              requested={trials} attempts={attempts} length={length} \
              allocations={} reads={} writes={} nanos={nanos_total} {} \
              rejected_allocations={} rejected_roundtrips={} maximum_stash={} \
-             maximum_cached_values={} cache_cleared={cache_cleared}",
+             all_maximum_stash={} maximum_cached_values={} cache_cleared={cache_cleared}",
             accepted.allocations,
             accepted.reads,
             accepted.writes,
@@ -1148,6 +1199,7 @@ where
             rejected.allocations,
             rejected.reads + rejected.writes,
             opt(maximum_stash),
+            opt(all_maximum_stash),
             opt(backend.max_cached_values()),
         )?;
         write_structures(out, algorithm, &structures, &BTreeMap::new())?;

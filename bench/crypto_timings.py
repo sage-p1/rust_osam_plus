@@ -20,12 +20,18 @@ Bandwidth model. A tree for ``capacity`` blocks (the next power of two above
 the build's allocations) has ``capacity / 2`` leaves, so a path has
 ``H = log2(capacity)`` buckets. An encrypted bucket holds Z blocks of
 ``bs + 16`` bytes (identifier and leaf) plus a 16-byte GCM tag and 12-byte
-nonce. Every round trip downloads and re-uploads the requested path and one
-eviction path, as in the BOSAM paper's model: ``2 * 2 * H`` buckets (an upper
-bound: the two paths share their top buckets).
+nonce. Every round trip downloads and re-uploads the requested path and the
+eviction paths of that access, as in the BOSAM paper's model:
+``2 * (1 + e) * H`` buckets (an upper bound: the paths share their top
+buckets), with ``e`` the run's ``read_evictions`` (2 for OSAM+, 1 otherwise).
 
-Round trips are reads + writes; the r-ary pointer (``multiwriterary``) is
-charged reads only, as in the paper.
+Round trips are reads + writes; OSAM+ (``multiwrite``) and the r-ary pointer
+(``multiwriterary``) are charged reads only: their writes stay in the stash
+and reads evict.
+
+Stash. Every row carries ``max_stash``, the most blocks the client stash held
+(Build: while installing the tree; algorithms: over every attempt, rejected
+ones included), and the LaTeX caption gives the maximum per configuration.
 
 Example (from rust_osam_plus/bench):
 
@@ -107,11 +113,11 @@ def bucket_bytes(bs: int) -> int:
     return Z * (bs + BLOCK_METADATA) + BUCKET_OVERHEAD
 
 
-def tree_geometry(allocations: int, bs: int) -> tuple[int, int, int, int]:
+def tree_geometry(allocations: int, bs: int, evictions: int = 1) -> tuple[int, int, int, int]:
     """(capacity, path buckets H, bytes per round trip, server tree bytes)."""
     capacity = 1 << max(1, math.ceil(math.log2(max(allocations, 2))))
     height = int(math.log2(capacity))
-    per_roundtrip = 2 * 2 * height * bucket_bytes(bs)
+    per_roundtrip = 2 * (1 + evictions) * height * bucket_bytes(bs)
     tree = (capacity - 1) * bucket_bytes(bs)
     return capacity, height, per_roundtrip, tree
 
@@ -142,7 +148,7 @@ def measure(binary: Path, graph: str, bs: int, pointer: str, args: argparse.Name
             networks: list[Network]) -> list[dict]:
     base = base_command(binary, graph, bs, pointer, args)
     label = POINTERS[pointer][2]
-    reads_only = POINTERS[pointer][0] == "multiwriterary"
+    reads_only = POINTERS[pointer][0] in ("multiwrite", "multiwriterary")
 
     # A dry-run build first: it sizes the encrypted tree before committing memory.
     dry = dict(run(base + ["--dry-run", "--alg", "build"]))
@@ -158,18 +164,21 @@ def measure(binary: Path, graph: str, bs: int, pointer: str, args: argparse.Name
     out = run(command)
     config = next(fields for kind, fields in out if kind == "config")
     build = next(fields for kind, fields in out if kind == "build")
+    evictions = _int(build.get("read_evictions")) or 1
+    capacity, height, per_roundtrip, tree = tree_geometry(allocations, bs, evictions)
 
     rows = []
     common = {
         "graph": Path(graph).stem, "vertices": config.get("vertices"), "edges": config.get("edges"),
         "bs": bs, "pointer": label, "capacity_log2": height,
-        "bytes_per_roundtrip": per_roundtrip, "tree_bytes": tree,
+        "bytes_per_roundtrip": per_roundtrip, "tree_bytes": tree, "read_evictions": evictions,
     }
     build_s = int(build["nanos"]) / 1e9
     install_s = int(build.get("install_nanos") or 0) / 1e9
     row = {**common, "algorithm": "Build", "status": "ok", "trials": 1, "length": 1,
            "compute_ms": (build_s + install_s) * 1e3, "dry_build_ms": build_s * 1e3,
-           "install_ms": install_s * 1e3, "roundtrips": 0, "bytes": tree}
+           "install_ms": install_s * 1e3, "roundtrips": 0, "bytes": tree,
+           "max_stash": _int(build.get("installation_maximum_stash"))}
     for net in networks:
         # The encrypted tree is uploaded once; building needs no round trips.
         row[f"{net.name}_ms"] = row["compute_ms"] + net.seconds(0, tree) * 1e3
@@ -189,11 +198,30 @@ def measure(binary: Path, graph: str, bs: int, pointer: str, args: argparse.Name
         compute_ms = int(fields["nanos"]) / 1e6 / steps
         row = {**common, "algorithm": NAMES.get(alg, alg), "status": fields["status"],
                "trials": trials, "length": int(fields["length"]), "compute_ms": compute_ms,
-               "roundtrips": roundtrips, "bytes": roundtrips * per_roundtrip}
+               "roundtrips": roundtrips, "bytes": roundtrips * per_roundtrip,
+               "max_stash": _int(fields.get("all_maximum_stash") or fields.get("maximum_stash"))}
         for net in networks:
             row[f"{net.name}_ms"] = compute_ms + net.seconds(roundtrips, roundtrips * per_roundtrip) * 1e3
         rows.append(row)
     return rows
+
+
+def _int(text: str | None) -> int | None:
+    return None if text in (None, "none") else int(text)
+
+
+def stash_caption(rows: list[dict]) -> str:
+    """'Maximum stash: ...' over each (bs, pointer) configuration, or ''."""
+    parts = []
+    for key in dict.fromkeys((row["bs"], row["pointer"]) for row in rows):
+        values = [row["max_stash"] for row in rows
+                  if (row["bs"], row["pointer"]) == key and row.get("max_stash") is not None]
+        if values:
+            parts.append(f"{key[1]}, $\\mathit{{bs}}={key[0]}$: ${max(values)}$")
+    if not parts:
+        return ""
+    return (" Maximum stash occupancy (blocks) over installation and every run of each configuration: "
+            + "; ".join(parts) + ".")
 
 
 def fmt(value: float) -> str:
@@ -245,7 +273,8 @@ def latex_table(rows: list[dict], networks: list[Network], label: str = "tab:cry
         "Build: total build and installation time (Comp, s), size of the encrypted tree (MB), and the "
         f"time to upload it on the {net.name} network (s). Algorithms, per step: client computation (Comp, ms), "
         f"data transferred (KB), and end-to-end time on the {net.name} network (ms), with "
-        f"$\\mathrm{{RTT}}={net.rtt_ms:g}$\\,ms and $\\mathrm{{BW}}={net.mb_per_s:g}$\\,MB/s.}}",
+        f"$\\mathrm{{RTT}}={net.rtt_ms:g}$\\,ms and $\\mathrm{{BW}}={net.mb_per_s:g}$\\,MB/s."
+        + stash_caption(rows) + "}",
         f"\\label{{{label}}}", "\\end{table}", "",
     ]
     return "\n".join(lines)
@@ -253,15 +282,17 @@ def latex_table(rows: list[dict], networks: list[Network], label: str = "tab:cry
 
 def print_rows(rows: list[dict], networks: list[Network]) -> None:
     nets = "".join(f"{n.name + ' ms':>12}" for n in networks)
-    print(f"\n{'graph':<16}{'bs':>5} {'pointer':<14}{'alg':<10}{'comp ms':>10}{'RT':>9}{'KB':>12}{nets}")
+    print(f"\n{'graph':<16}{'bs':>5} {'pointer':<14}{'alg':<10}{'comp ms':>10}{'RT':>9}{'KB':>12}{nets}{'stash':>7}")
     for row in rows:
         if row["status"] == "failed":
             print(f"{row['graph'][:15]:<16}{row['bs']:>5} {row['pointer']:<14}{row['algorithm']:<10}  failed (no full-length run)")
             continue
         times = "".join(f"{row[f'{n.name}_ms']:>12.1f}" for n in networks)
         print(f"{row['graph'][:15]:<16}{row['bs']:>5} {row['pointer']:<14}{row['algorithm']:<10}{row['compute_ms']:>10.2f}"
-              f"{row['roundtrips']:>9.1f}{row['bytes'] / 1e3:>12.1f}{times}")
-    print("(Build row: comp = dry-run build + install; KB = encrypted tree; network time = its upload.)")
+              f"{row['roundtrips']:>9.1f}{row['bytes'] / 1e3:>12.1f}{times}"
+              f"{'-' if row.get('max_stash') is None else row['max_stash']:>7}")
+    print("(Build row: comp = dry-run build + install; KB = encrypted tree; network time = its upload;"
+          " stash = most blocks in the client stash, installing for Build, over every attempt otherwise.)")
 
 
 def main(argv: list[str] | None = None) -> int:

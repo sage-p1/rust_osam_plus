@@ -20,10 +20,11 @@ Differences from the Python launcher:
   ``WALK_LENGTH`` moves for rw and pr, two neighbor-list retrievals for cd,
   and one for dtc, which has no natural step). So the fixed costs of a run
   (the start lookup, final deletions) are amortized over the same number of
-  steps in every trial. Round trips are reads + writes, except for the r-ary
-  pointer (BOSAM), which is charged reads only, as in
-  ``parse_er_graphs_bosam.py`` (its writes are buffered and evicted in
-  public batches); the ``charge`` column says which, and reads and writes
+  steps in every trial. Round trips are reads + writes, except for OSAM+
+  (multiwrite) and the r-ary pointer (BOSAM), which are charged reads only:
+  their writes stay in the stash and are evicted by reads (two eviction paths
+  per OSAM+ read; BOSAM also flushes in public batches); the ``charge`` column
+  says which, and reads and writes
   are always reported separately. Each algorithm gets at most 1000 runs: ``status`` is
   ``ok`` when all trials were found, ``short`` when fewer were, and
   ``failed`` when no run was full length (no costs are reported then).
@@ -124,7 +125,9 @@ POINTERS = local.POINTERS
 # pointers, binary with every write a round trip (compare with multiwrite) and
 # r-ary with buffered writes, charged reads only (compare with multiwriterary).
 EXTRA_POINTERS = ("balanced", "balancedrary")
-READS_ONLY_POINTERS = ("multiwriterary", "balancedrary")
+# OSAM+ (multiwrite) and BOSAM keep their writes in the stash and evict on
+# reads, so only reads are round trips.
+READS_ONLY_POINTERS = ("multiwrite", "multiwriterary", "balancedrary")
 MAX_ER_WORKLOAD = local.MAX_ER_WORKLOAD
 ALGORITHMS = local.ALGORITHMS  # rw cd pr dfs bfs dijkstra prim dtc, in this order
 MAX_STEPS = local.MAX_STEPS
@@ -690,13 +693,13 @@ def _value(text: str) -> Any:
 def parse_log(path: Path) -> dict[str, Any]:
     parsed: dict[str, Any] = {
         "config": {}, "build": {}, "trials": {}, "algorithms": {},
-        "structures": [], "done": False,
+        "structures": [], "done": False, "dynamic": {},
     }
     for line in path.read_text().splitlines():
         kind, _, rest = line.partition(" ")
         fields = dict(token.split("=", 1) for token in rest.split() if "=" in token)
         record = {key: _value(value) for key, value in fields.items()}
-        if kind in ("config", "build"):
+        if kind in ("config", "build", "dynamic"):
             parsed[kind] = record
         elif kind == "trial":
             parsed["trials"].setdefault(record["alg"], []).append(record)
@@ -772,6 +775,8 @@ def report_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
         "build_ms": build["nanos"] / 1e6 if build.get("nanos") is not None else None,
         "install_ms": build["install_nanos"] / 1e6 if build.get("install_nanos") is not None else None,
         "installation_max_stash": build.get("installation_maximum_stash"),
+        "read_evictions": build.get("read_evictions"),
+        "dynamic_max_stash": parsed.get("dynamic", {}).get("maximum_stash"),
         "complete_log": parsed["done"],
         **option_columns(config),
     }
@@ -824,6 +829,8 @@ def report_rows(parsed: dict[str, Any], log: Path) -> list[dict[str, Any]]:
                 row[f"oram_roundtrips_per_{unit}"] = row[f"oram_sd_roundtrips_per_{unit}"] = None
         row["mean_ms_per_trial"] = statistics.fmean(nanos) / 1e6 if nanos else None
         row["max_stash_peak"] = max(stash) if stash else None
+        # Over every attempt, rejected ones included (they run on the same tree).
+        row["max_stash_all"] = summary.get("all_maximum_stash")
         row["log"] = log.name
         rows.append(row)
     return rows
@@ -873,8 +880,9 @@ FIELDS = [
     "rejected_roundtrips",  # reads + writes, whatever the charge
     "oram_levels", "oram_roundtrips_per_trial", "oram_sd_roundtrips_per_trial",
     "oram_roundtrips_per_step", "oram_sd_roundtrips_per_step",
-    "mean_ms_per_trial", "max_stash_peak",
-    "build_ms", "install_ms", "installation_max_stash", "complete_log", "log",
+    "mean_ms_per_trial", "max_stash_peak", "max_stash_all",
+    "build_ms", "install_ms", "installation_max_stash", "dynamic_max_stash", "read_evictions",
+    "complete_log", "log",
 ]
 STRUCTURE_FIELDS = [
     "n", "bs", "pointer", "cache", "mode", "layout", "phase", "structure",
@@ -885,10 +893,11 @@ STRUCTURE_FIELDS = [
 def charge(pointer: str | None) -> str:
     """What a job's round trips count, as in ``parse_er_graphs_bosam.py``.
 
-    The r-ary pointer (BOSAM) is charged reads only: a read is what costs it a
-    network round trip, while its writes are buffered and evicted in public
-    batches. Every other pointer (OSAM, OSAM+, ORAM) pays a round trip for
-    reads and writes alike. The ``reads`` and ``writes`` columns are always
+    OSAM+ (multiwrite) and the r-ary pointer (BOSAM) are charged reads only: a
+    read is what costs them a network round trip, while their writes stay in
+    the stash and are evicted by reads (OSAM+ evicts two paths per read; BOSAM
+    also flushes in public batches). Every other pointer (OSAM, ORAM) pays a
+    round trip for reads and writes alike. The ``reads`` and ``writes`` columns are always
     reported separately.
     """
     return "reads" if pointer in READS_ONLY_POINTERS else "reads+writes"
@@ -976,13 +985,14 @@ def print_report(rows: list[dict[str, Any]], limit: int | None = None) -> None:
             f"{_fmt(row['mean_roundtrips_per_step']):>9} "
             f"{_fmt(row['sd_roundtrips_per_step']):>9} {_fmt(row['mean_reads_per_step']):>8} "
             f"{_fmt(row['mean_writes_per_step']):>8} "
-            f"{_fmt(row['oram_roundtrips_per_step']):>13} {_fmt(row['max_stash_peak']):>6}"
+            f"{_fmt(row['oram_roundtrips_per_step']):>13} {_fmt(row.get('max_stash_all') or row['max_stash_peak']):>6}"
         )
     print(
         "\nFull-length runs only ('tries': start draws for all trials, at most 1000; FAILED: "
         "no full-length run, !: fewer full-length runs than requested); per-step costs are per-run costs / "
-        "run length. Round trips = reads + writes, except reads only for multiwriterary "
-        "and balancedrary (their writes are buffered and evicted in batches)."
+        "run length. Round trips = reads + writes, except reads only for multiwrite, "
+        "multiwriterary and balancedrary (their writes stay in the stash and are evicted by reads). "
+        "stash: maximum stash occupancy in blocks over every attempt (crypto runs only)."
     )
     if any(row.get("layout") == "python-sized" for row in rows):
         print(

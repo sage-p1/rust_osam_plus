@@ -21,10 +21,17 @@ nominal length (visited vertices for bfs/dfs/dijkstra/prim, walk moves for rw
 and pr, neighbor-list retrievals for cd, the whole run for dtc), over
 full-length runs only. Build is one construction and is plotted as its total.
 
-Charging. BOSAM is charged reads only (its writes are buffered and evicted in
-public batches); every other series is charged reads and writes. ORAM is the
+Charging. BOSAM and OSAM+ are charged reads only (their writes stay in the
+stash and are evicted by reads; BOSAM also flushes in public batches); every
+other series is charged reads and writes. ORAM is the
 recursive pointer's ORAM structures scaled by the position-map recursion
 depth (``oram_*`` columns of the report).
+
+Datasets (``--dataset-summary``): ``tables/dataset_table.tex`` (bs = 64, in the
+body) and ``tables/dataset_table_bs4096.tex`` (bs = 4096, in the appendix).
+Counts come from dry-run rows, or from crypto rows for jobs run only with
+cryptography (both make the same accesses); when crypto rows exist, each
+caption gives the maximum client stash occupancy over them.
 
 Error bars are the sample standard deviation across trials, taken in linear
 space and mapped through log2 (so asymmetric). Build runs once and has none.
@@ -86,7 +93,10 @@ def _pointer(pointer: str, move: bool | None = None):
     return select
 
 
-OSAM_PLUS = Series("OSAM$^+$", "blue,mark=*,mark options={fill=blue}", _pointer("multiwrite", True))
+# OSAM+ keeps its writes in the stash and evicts two paths per read, so like
+# BOSAM it is charged reads only.
+OSAM_PLUS = Series("OSAM$^+$", "blue,mark=*,mark options={fill=blue}", _pointer("multiwrite", True),
+                   reads_only=True)
 CONCRETE_SERIES = (
     OSAM_PLUS,
     Series("OSAM", "red,mark=square*,mark options={fill=red}", _pointer("original", False)),
@@ -150,7 +160,7 @@ def algorithm_points(summary: pd.DataFrame, series: Series, alg: str, d: int, bs
     elif series.reads_only:
         mean_col, sd_col = "mean_reads_per_step", "sd_reads_per_step"
     else:
-        # reads + writes (the report charges every pointer but r-ary this way)
+        # reads + writes (the report charges OSAM and ORAM this way)
         mean_col, sd_col = "mean_roundtrips_per_step", "sd_roundtrips_per_step"
     points = []
     for _, row in rows.sort_values("log2n").iterrows():
@@ -279,8 +289,8 @@ FIGURE_CAPTION = (
     "Round trips at $d={d}$ and $bs={bs}$: total for graph construction (Build), per step for the "
     "eight graph algorithms (a visited vertex for BFS, DFS, Dijkstra and Prim; a move for RW and PR; "
     "a neighbor-list retrieval for CD; the whole run for DTC), over full-length runs only. "
-    "\\sysname is charged reads only, since its writes are buffered and evicted in public batches; "
-    "OSAM$^+$ and ORAM are charged reads and writes, both of which cost a round trip."
+    "\\sysname and OSAM$^+$ are charged reads only, since their writes stay in the stash and are "
+    "evicted by reads; ORAM is charged reads and writes, both of which cost a round trip."
 )
 
 
@@ -371,8 +381,8 @@ def summary_table(summary, structures) -> str:
         "for \\sysname, OSAM$^+$ and recursive Path ORAM: the total for Build and the cost per step for "
         "the algorithms (a visited vertex for BFS, DFS, Dijkstra and Prim; a move for RW and PR; a "
         "neighbor-list retrieval for CD; the whole run for DTC), averaged over full-length runs. "
-        "\\sysname is charged reads only, since its writes are buffered and evicted in public batches; "
-        "the other two are charged reads and writes, both of which cost a round trip. Bars are the "
+        "\\sysname and OSAM$^+$ are charged reads only, since their writes stay in the stash and are "
+        "evicted by reads; recursive Path ORAM is charged reads and writes. Bars are the "
         "sample standard deviation across trials, taken in linear space and mapped through the "
         "logarithm, so they are asymmetric; Build runs once and carries none. Per-size behaviour is in "
         "Appendix~\\ref{app:osam-graph-workloads}.}",
@@ -405,15 +415,57 @@ DATASET_SERIES = (CONCRETE_SERIES[0], CONCRETE_SERIES[3], CONCRETE_SERIES[2], CO
 DATASET_LABEL = {"OSAM w/ Move": "w/ Move"}
 
 
+# A job's identity without its mode: dry-run and crypto runs of the same job
+# make the same accesses, so either gives the round trips.
+_JOB_KEY = ("dataset", "bs", "pointer", "cache", "move", "layout")
+
+
+def _prefer_dry_run(frame: pd.DataFrame) -> pd.DataFrame:
+    """Dry-run rows, plus the crypto rows of jobs that only ran in crypto mode."""
+    key = [column for column in _JOB_KEY if column in frame.columns]
+    dry = frame[frame["mode"] == "dry-run"]
+    crypto = frame[frame["mode"] == "crypto"]
+    have = set(map(tuple, dry[key].astype(str).values))
+    only = crypto[[tuple(row) not in have for row in crypto[key].astype(str).values]]
+    return pd.concat([dry, only]).copy()
+
+
 def load_datasets(summary_path: Path, structures_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Summary and structure rows for the dataset tables. ``summary.attrs
+    ["stash"]`` keeps every crypto summary row, for the captions' stash maxima."""
     summary = pd.read_csv(summary_path)
-    summary = summary[summary["mode"] == "dry-run"].copy()
     structures = pd.read_csv(structures_path)
-    structures = structures[structures["mode"] == "dry-run"].copy()
     for frame in (summary, structures):
         frame["dataset"] = frame.log.str.split("_").str[0]
     structures["move"] = structures.cache.astype(bool)
+    stash = summary[summary["mode"] == "crypto"].copy()
+    summary, structures = _prefer_dry_run(summary), _prefer_dry_run(structures)
+    summary.attrs["stash"] = stash
     return summary, structures
+
+
+STASH_COLUMNS = ("max_stash_all", "max_stash_peak", "installation_max_stash", "dynamic_max_stash")
+
+
+def stash_caption(summary, series_list, bs: int, datasets=None) -> str:
+    """'Maximum stash ...' over the crypto runs behind one table, or ''."""
+    stash = summary.attrs.get("stash")
+    if stash is None or stash.empty:
+        return ""
+    stash = stash[stash.bs == bs]
+    if datasets is not None:
+        stash = stash[stash.dataset.isin(datasets)]
+    parts = []
+    for series in series_list:
+        rows = stash[series.select(stash)]
+        values = [rows[column].max() for column in STASH_COLUMNS if column in rows.columns]
+        values = [value for value in values if pd.notna(value)]
+        if values:
+            parts.append(f"{series.label} ${int(max(values))}$")
+    if not parts:
+        return ""
+    return (f" Maximum client stash occupancy, in blocks, over installation and every run with "
+            f"cryptography at $bs={bs}$: " + ", ".join(parts) + ".")
 
 
 def dataset_point(summary, structures, series: Series, dataset: str, alg: str, bs: int):
@@ -464,7 +516,8 @@ def dataset_cell(point: Point | None, status: str) -> str:
     return text + "$^{\\dagger}$" if status == "short" else text
 
 
-def dataset_table(summary, structures) -> str:
+def dataset_table(summary, structures, bs: int = 64, table_label: str = "tab:real results",
+                  other: str = "") -> str:
     header = " & ".join(DATASET_HEADER.get(alg, CAPTION[alg]) for alg in DATASET_COLUMNS)
     width = 3 + len(DATASET_COLUMNS)
     lines = [
@@ -479,18 +532,19 @@ def dataset_table(summary, structures) -> str:
         "\\hline",
     ]
     short = set()
+    shown = []
     for dataset, (name, directed) in DATASETS.items():
         rows = summary[summary.dataset == dataset]
         if rows.empty:
             continue
         n, edges = int(rows.n.iloc[0]), int(rows.edges.iloc[0])
+        shown.append(dataset)
         kind = "Directed" if directed else "Undirected"
         stack = f"{name}\\\\{kind}\\\\$\\log n = {math.log2(n):.1f}$\\\\$d={edges / n:.1f}$"
-        span = 2 * len(DATASET_SERIES)
+        span = len(DATASET_SERIES)
         lines.append(f"\\multirow{{{span}}}{{*}}{{\\shortstack[r]{{{stack}}}}}")
-        for block, bs in enumerate((64, 4096)):
-            prefix = "& " if block == 0 else "& "
-            lines.append(f"{prefix}\\multirow{{{len(DATASET_SERIES)}}}{{*}}{{${bs}$}}")
+        for block in (1,):
+            lines.append(f"& \\multirow{{{len(DATASET_SERIES)}}}{{*}}{{${bs}$}}")
             for index, series in enumerate(DATASET_SERIES):
                 cells = []
                 for alg in DATASET_COLUMNS:
@@ -514,13 +568,14 @@ def dataset_table(summary, structures) -> str:
                       "entry point (" + "; ".join(notes) + " runs).")
     lines += [
         "\\end{tabular}" + fit_close("\\textwidth"),
-        "\\caption{Base-two logarithm of round trips (reads plus writes) on each real dataset: the "
+        "\\caption{Base-two logarithm of round trips on each real dataset (reads only for OSAM$^+$, "
+        "whose writes stay in the stash and are evicted by reads; reads plus writes otherwise): the "
         "total for Build and the cost per step for the algorithms (a visited vertex for BFS, DFS, "
         "Dijkstra, and Prim; a move for RW and PR; a neighbor-list retrieval for CD; the whole run for "
         "DTC), averaged over $50$ full-length runs. In parentheses: the coefficient of variation "
         "(sample standard deviation divided by the mean) of that cost across runs. Entries marked -- had no full-length run in $1000$ draws of the entry point."
-        + short_text + "}",
-        "\\label{tab:real results}",
+        + other + short_text + stash_caption(summary, DATASET_SERIES, bs, shown) + "}",
+        f"\\label{{{table_label}}}",
         "\\end{table*}",
         "",
     ]
@@ -573,8 +628,16 @@ def write_concrete_datasets(root: Path, summary, structures) -> list[Path]:
     tables = root / "tables"
     tables.mkdir(parents=True, exist_ok=True)
     written = []
+    # bs = 64 in the body, bs = 4096 in the appendix.
     path = tables / "dataset_table.tex"
-    path.write_text(dataset_table(summary, structures))
+    path.write_text(dataset_table(
+        summary, structures, 64, "tab:real results",
+        f" Block size $bs=64$; $bs=4096$ is in Table~\\ref{{tab:real results 4096}}."))
+    written.append(path)
+    path = tables / "dataset_table_bs4096.tex"
+    path.write_text(dataset_table(
+        summary, structures, 4096, "tab:real results 4096",
+        f" Block size $bs=4096$; $bs=64$ is in Table~\\ref{{tab:real results}}."))
     written.append(path)
     path = tables / "dataset_acceptance.tex"
     path.write_text(acceptance_table(summary))
@@ -639,10 +702,11 @@ def bosam_dataset_table(summary, structures, columns, full: bool) -> str:
         f"\\caption{{Base-two logarithm of round trips on the SNAP graphs with average out-degree "
         f"$d\\ge {BOSAM_MIN_DEGREE}$, for {what}: the total for Build and the cost per step for the "
         "algorithms (a visited vertex, a walk move, or a neighbor-list retrieval; the whole run for "
-        "DTC), averaged over $50$ full-length runs. \\sysname is charged reads only, since its writes "
-        "are buffered and evicted in public batches; OSAM$^+$ and recursive Path ORAM are charged reads "
-        "and writes. Entries marked -- had no full-length run in $1000$ draws of the entry point."
-        + short_text + "}"
+        "DTC), averaged over $50$ full-length runs. \\sysname and OSAM$^+$ are charged reads only, "
+        "since their writes stay in the stash and are evicted by reads; recursive Path ORAM is charged "
+        "reads and writes. Entries marked -- had no full-length run in $1000$ draws of the entry point."
+        + short_text
+        + "".join(stash_caption(summary, BOSAM_SERIES, bs) for bs in (64, 4096)) + "}"
     )
     lines.append(caption)
     if not full:

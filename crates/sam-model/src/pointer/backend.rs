@@ -59,9 +59,15 @@ impl PointerKind {
     }
 
     /// Cryptographic access strategy used after the dry-run handoff.
+    ///
+    /// OSAM+ (`MultiWrite`) and BOSAM keep their writes in the stash (no
+    /// ReadAndRm, no eviction on write) and evict on reads instead: the
+    /// adapter's multi-path read evicts the tree's configured path count
+    /// (two for OSAM+ in the graph benchmark). Their round trips are reads.
     pub fn access_strategy(self) -> AccessStrategy {
         match self {
-            Self::MultiWriteRary { .. }
+            Self::MultiWrite
+            | Self::MultiWriteRary { .. }
             | Self::Balanced {
                 buffered_writes: true,
                 ..
