@@ -23,7 +23,7 @@ Differences from the Python launcher:
   steps in every trial. Round trips are reads + writes, except for OSAM+
   (multiwrite) and the r-ary pointer (BOSAM), which are charged reads only:
   their writes stay in the stash and are evicted by reads (two eviction paths
-  per OSAM+ read; BOSAM also flushes in public batches); the ``charge`` column
+  per read for both; BOSAM also flushes in public batches); the ``charge`` column
   says which, and reads and writes
   are always reported separately. Each algorithm gets at most 1000 runs: ``status`` is
   ``ok`` when all trials were found, ``short`` when fewer were, and
@@ -895,7 +895,7 @@ def charge(pointer: str | None) -> str:
 
     OSAM+ (multiwrite) and the r-ary pointer (BOSAM) are charged reads only: a
     read is what costs them a network round trip, while their writes stay in
-    the stash and are evicted by reads (OSAM+ evicts two paths per read; BOSAM
+    the stash and are evicted by reads (both evict two paths per read; BOSAM
     also flushes in public batches). Every other pointer (OSAM, ORAM) pays a
     round trip for reads and writes alike. The ``reads`` and ``writes`` columns are always
     reported separately.

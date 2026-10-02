@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! config impl=native mode=dry-run pointer=multiwriterary cache=false move=true block_size=4096 ... build=static prime=false dynamic_ops=0
-//! build allocations=.. reads=.. writes=.. flushes=.. nanos=.. install_nanos=.. installation_maximum_stash=.. read_evictions=..
+//! build allocations=.. reads=.. writes=.. flushes=.. nanos=.. install_nanos=.. installation_maximum_stash=.. read_evictions=.. read_evicted_writes=..
 //! prime walks=.. allocations=.. reads=.. writes=.. nanos=..            (with --prime)
 //! dynamic ops=.. add_vertex=.. add_edge=.. delete_edge=.. delete_vertex=.. allocations=.. reads=.. writes=.. nanos=.. tombstones=.. maximum_stash=..   (with --dynamic-ops N)
 //! trial alg=bfs index=0 start=.. attempts=.. allocations=.. reads=.. writes=.. roundtrips=.. nanos=.. size=.. cost=none stash_peak=none
@@ -46,7 +46,7 @@ use sam_model::{
     BlockCodec, CachedGraphPointerCodec, DryRunSam, GraphBackend, GraphInput, GraphLayout,
     GraphObject, GraphValueCodec, MultiWriteGraphPointerCodec, NoMovePointers, ObliviousGraph,
     OperationCounts, OriginalGraphPointerCodec, PathOsamSam, RaryGraphPointerCodec,
-    RecursiveGraphPointerCodec, SamError, SingleAccessMachine, StructureStats, Tagged,
+    ReadEvictedWrites, RecursiveGraphPointerCodec, ReadStrategy, SamError, SingleAccessMachine, StructureStats, Tagged,
     TaggedGraphPointerCodec, WeightedEdge,
 };
 use std::{
@@ -66,6 +66,8 @@ type BenchResult<T> = Result<T, Box<dyn Error>>;
 /// Runs allowed per algorithm while looking for full-length runs. An
 /// algorithm with no full-length run among them is reported as failed.
 const MAX_ATTEMPTS: usize = 1000;
+/// Eviction paths per OSAM+ (and BOSAM) read, and per OSAM+ public flush.
+const OSAM_PLUS_READ_EVICTIONS: usize = 2;
 
 const ALGORITHMS: [&str; 9] = [
     "build", "rw", "bfs", "dfs", "dijkstra", "prim", "cd", "dtc", "pr",
@@ -90,6 +92,9 @@ struct Config {
     no_move: bool,
     crypto: bool,
     stash_size: u64,
+    /// OSAM+ public flush size: a flush of this many paths after this many
+    /// writes not absorbed by reads.
+    flush_batch: usize,
     /// Keep per-address read/write-limit checks in the encrypted SAM. They are
     /// client state proportional to the number of addresses, so off by default.
     check_sam_policy: bool,
@@ -118,6 +123,9 @@ struct BuildInfo {
     installation_maximum_stash: Option<u64>,
     /// Eviction paths per read on the encrypted tree (crypto mode only).
     read_evictions: Option<usize>,
+    /// OSAM+'s rule: writes stay in the stash, reads evict, and a public flush
+    /// follows every `OSAM_PLUS_READ_EVICTIONS` writes without a read.
+    read_evicted_writes: bool,
     /// Priming measurements (`--prime`), taken on the build SAM.
     prime: Option<Phase>,
 }
@@ -543,6 +551,7 @@ where
             backend,
             dry,
             pointer_branching_factor,
+            kind == PointerKind::MultiWrite,
         );
     }
     match config.block_size {
@@ -575,20 +584,30 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_backend<P, B>(
     config: &Config,
     input: &GraphInput,
     out: &mut dyn Write,
     layout: GraphLayout,
     mut backend: B,
-    mut sam: DryRunSam<B::Cell>,
+    mut dry: DryRunSam<B::Cell>,
     pointer_branching_factor: Option<usize>,
+    read_evicted_writes: bool,
 ) -> BenchResult<()>
 where
     P: Clone,
     B: GraphBackend<P>,
 {
-    let (mut graph, build) = build_graph(config, input, layout, &mut backend, &mut sam)?;
+    // OSAM+: writes stay in the stash; a public flush bounds write bursts.
+    let mut sam = ReadEvictedWrites::new(
+        &mut dry,
+        OSAM_PLUS_READ_EVICTIONS,
+        config.flush_batch,
+        read_evicted_writes,
+    );
+    let (mut graph, mut build) = build_graph(config, input, layout, &mut backend, &mut sam)?;
+    build.read_evicted_writes = read_evicted_writes;
     run_trials(
         config,
         input,
@@ -619,11 +638,22 @@ where
     B: GraphBackend<P>,
     C: BlockCodec<B::Cell, BLOCK>,
 {
-    let (graph, build) = build_graph(config, input, layout, &mut backend, &mut dry)?;
-    // OSAM+ (multiwrite) keeps its writes in the stash and evicts two paths
-    // on every read; BOSAM evicts one per read plus its public flushes; the
-    // other pointers evict one path on every read and every write.
-    if kind == PointerKind::MultiWrite {
+    let read_evicted_writes = kind == PointerKind::MultiWrite;
+    let (graph, mut build) = {
+        let mut sam = ReadEvictedWrites::new(
+            &mut dry,
+            OSAM_PLUS_READ_EVICTIONS,
+            config.flush_batch,
+            read_evicted_writes,
+        );
+        build_graph(config, input, layout, &mut backend, &mut sam)?
+    };
+    build.read_evicted_writes = read_evicted_writes;
+    // OSAM+ (multiwrite) and BOSAM (r-ary, and buffered balanced) keep their
+    // writes in the stash and evict two paths on every read (BOSAM also
+    // flushes in public batches); the other pointers evict one path on every
+    // read and every write.
+    if kind.access_strategy().reads == ReadStrategy::MultiPath {
         install_and_run::<P, B, C, BLOCK, 2>(
             config, input, out, layout, pointer_branching_factor, kind, codec, backend, dry,
             graph, build,
@@ -678,13 +708,15 @@ where
     build.install_nanos = Some(install_clock.elapsed().as_nanos());
     build.installation_maximum_stash = Some(encrypted.build_max_stash_occupancy());
     build.read_evictions = Some(PATHS);
+    let mut sam =
+        ReadEvictedWrites::new(&mut encrypted, PATHS, config.flush_batch, build.read_evicted_writes);
     run_trials(
         config,
         input,
         out,
         layout,
         &mut backend,
-        &mut encrypted,
+        &mut sam,
         &mut graph,
         pointer_branching_factor,
         build,
@@ -719,6 +751,7 @@ where
         install_nanos: None,
         installation_maximum_stash: None,
         read_evictions: None,
+        read_evicted_writes: false,
         prime: None,
     };
     if config.prime {
@@ -1014,7 +1047,7 @@ where
     writeln!(
         out,
         "build allocations={} reads={} writes={} flushes={} nanos={} install_nanos={} \
-         installation_maximum_stash={} read_evictions={}",
+         installation_maximum_stash={} read_evictions={} read_evicted_writes={} flush_batch={}",
         build.operations.allocations,
         build.operations.reads,
         build.operations.writes,
@@ -1023,6 +1056,8 @@ where
         opt(build.install_nanos),
         opt(build.installation_maximum_stash),
         opt(build.read_evictions),
+        build.read_evicted_writes,
+        opt(build.read_evicted_writes.then_some(config.flush_batch)),
     )?;
     write_structures(out, "build", &build.structures, &BTreeMap::new())?;
     if let Some(prime) = &build.prime {
@@ -1381,6 +1416,9 @@ oblivious_graph_bench --graph FILE --bs BYTES --pt POINTER [options]
                       copies the object's nested pointers, and every change is a
                       move + put (the paper's OSAM and ORAM series)
   --dry-run | --crypto [--stash-size N]   in-memory SAM (default) or Path OSAM+
+  --flush-batch N     multiwrite (OSAM+): its writes stay in the stash and each read
+                      evicts 2 paths; after N writes not absorbed by reads, one public
+                      flush of N paths (one round trip, counted as a read). Default 2
   --pretend-original-fits   dry-run only: if `original` records cannot fit the block,
                       use Python's edge fanout (bs - 16) / 8 instead of failing; if
                       `balanced` root cells cannot fit, use multiwrite's layout. The
@@ -1428,6 +1466,7 @@ fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config>
     let mut no_move = false;
     let mut crypto = false;
     let mut stash_size: u64 = 40; // osam_plus::DEFAULT_STASH_OVERFLOW_SIZE
+    let mut flush_batch: usize = OSAM_PLUS_READ_EVICTIONS;
     let mut output = None;
     let mut check_sam_policy = false;
     let mut pretend_original_fits = false;
@@ -1476,6 +1515,7 @@ fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config>
             "--dry-run" => crypto = false,
             "--crypto" | "--encrypted" => crypto = true,
             "--stash-size" => stash_size = value(&mut args)?.parse()?,
+            "--flush-batch" => flush_batch = value(&mut args)?.parse()?,
             "--output" => output = Some(value(&mut args)?),
             "--check-sam-policy" => check_sam_policy = true,
             "--pretend-original-fits" => pretend_original_fits = true,
@@ -1497,6 +1537,9 @@ fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config>
     }
     if max_steps == 0 {
         return Err("max_steps must be positive".into());
+    }
+    if flush_batch == 0 {
+        return Err("flush_batch must be positive".into());
     }
     if max_neighbors == 0 {
         return Err("max_neighbors must be positive".into());
@@ -1542,6 +1585,7 @@ fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config>
         no_move,
         crypto,
         stash_size,
+        flush_batch,
         check_sam_policy,
         pretend_original_fits,
         dynamic_build,

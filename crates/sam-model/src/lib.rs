@@ -11,6 +11,7 @@ mod dry_run;
 mod error;
 mod graph;
 mod path_osam;
+mod read_evicted;
 mod sam;
 pub mod structures;
 
@@ -28,6 +29,7 @@ pub use graph::{
     PRIME_WALK_LENGTH,
 };
 pub use path_osam::PathOsamSam;
+pub use read_evicted::{ReadEvictedWrites, FLUSH_STRUCTURE};
 pub use sam::{
     AccessPolicy, AccessStrategy, Address, MemoryClass, OperationCounts, ReadStrategy, SamSnapshot,
     SingleAccessMachine, SnapshotBlock, StashStats, Stats, StructureStats, WriteStrategy,

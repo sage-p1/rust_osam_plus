@@ -23,7 +23,7 @@ the build's allocations) has ``capacity / 2`` leaves, so a path has
 nonce. Every round trip downloads and re-uploads the requested path and the
 eviction paths of that access, as in the BOSAM paper's model:
 ``2 * (1 + e) * H`` buckets (an upper bound: the paths share their top
-buckets), with ``e`` the run's ``read_evictions`` (2 for OSAM+, 1 otherwise).
+buckets), with ``e`` the run's ``read_evictions`` (2 for OSAM+ and BOSAM, 1 otherwise).
 
 Round trips are reads + writes; OSAM+ (``multiwrite``) and the r-ary pointer
 (``multiwriterary``) are charged reads only: their writes stay in the stash
