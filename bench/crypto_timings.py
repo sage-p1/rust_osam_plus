@@ -43,6 +43,13 @@ Example (from rust_osam_plus/bench):
     # OSAM+ on every dataset at both block sizes (no names = all datasets):
     python3 crypto_timings.py --datasets --bs 64 4096 --trials 10 --csv ../crypto-datasets.csv
 
+The paper's table (tab:memory_size_timings) from the launcher's crypto runs,
+without running anything:
+
+    python3 crypto_timings.py --from-summary ../dataset-summary.csv \\
+        --from-structures ../dataset-structures.csv --trials 10 \\
+        --latex ~/Research/osrm/paper/tables/memory_size_timings.tex
+
 The CSV is rewritten after every configuration, so a long run keeps its
 partial results. Algorithms with no full-length run (for example DTC on
 roadNet-PA) still spend up to 1000 encrypted attempts; drop them with
@@ -295,6 +302,160 @@ def print_rows(rows: list[dict], networks: list[Network]) -> None:
           " stash = most blocks in the client stash, installing for Build, over every attempt otherwise.)")
 
 
+# --------------------------------------------------------------------------
+# The paper's table from the launcher's crypto runs
+# --------------------------------------------------------------------------
+
+PAPER_ALGORITHMS = ("bfs", "pr", "dtc")  # the table's WAN columns
+
+
+def _float(text: str | None) -> float | None:
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def summary_configurations(summary: Path, structures: Path, pointer: str = "multiwrite",
+                           trials: int = 10) -> list[dict]:
+    """One record per (dataset, bs) from ``launch_rust_tests.py --mode crypto``
+    reports: the dataset-summary.csv and dataset-structures.csv it writes.
+
+    Only logs of ``trials`` requested runs (``_trials-T-T_``) are used, so an
+    older crypto run of the same job at another trial count is ignored. The
+    tree is sized as in ``measure``: the next power of two above the build's
+    allocations (every structure of the build phase).
+    """
+    tag = f"_trials-{trials}-{trials}_"
+    with summary.open() as handle:
+        rows = [row for row in csv.DictReader(handle)
+                if row["mode"] == "crypto" and row["pointer"] == pointer and tag in row["log"]]
+    allocations: dict[str, int] = {}
+    with structures.open() as handle:
+        for row in csv.DictReader(handle):
+            if row["phase"] == "build" and tag in row["log"]:
+                allocations[row["log"]] = allocations.get(row["log"], 0) + int(row["allocations"] or 0)
+    configs: dict[str, dict] = {}
+    for row in rows:
+        config = configs.setdefault(row["log"], {
+            "dataset": row["log"].split("_")[0], "bs": int(row["bs"]), "n": int(row["n"]),
+            "edges": int(row["edges"]), "log": row["log"], "algorithms": {},
+            "evictions": int(_float(row.get("read_evictions")) or 1),
+            "build_ms": _float(row.get("build_ms")) or 0.0,
+            "install_ms": _float(row.get("install_ms")) or 0.0,
+            "max_stash": None,
+        })
+        config["algorithms"][row["alg"]] = row
+        for column in ("max_stash_all", "installation_max_stash", "dynamic_max_stash"):
+            value = _float(row.get(column))
+            if value is not None:
+                config["max_stash"] = max(config["max_stash"] or 0, int(value))
+    out = []
+    for config in configs.values():
+        if config["log"] not in allocations:
+            continue
+        capacity, height, per_roundtrip, tree = tree_geometry(
+            allocations[config["log"]], config["bs"], config["evictions"])
+        compute_ms = roundtrips = 0.0
+        for row in config["algorithms"].values():
+            ms, rt, done = (_float(row["mean_ms_per_trial"]), _float(row["mean_roundtrips_per_trial"]),
+                            int(row["trials"] or 0))
+            if ms is not None and rt and done:
+                compute_ms += ms * done
+                roundtrips += rt * done
+        config.update(capacity_log2=height, bytes_per_roundtrip=per_roundtrip, tree_bytes=tree,
+                      ms_per_roundtrip=compute_ms / roundtrips if roundtrips else None)
+        out.append(config)
+    return out
+
+
+def step_time(config: dict, alg: str, network: Network) -> tuple[float, float, str] | None:
+    """(seconds, round trips, status) per step of ``alg`` on ``network``."""
+    row = config["algorithms"].get(alg)
+    if row is None or row["status"] == "failed" or not int(row["trials"] or 0):
+        return None
+    roundtrips = float(row["mean_roundtrips_per_step"])
+    compute_s = float(row["mean_ms_per_trial"]) / float(row["length"]) / 1e3
+    seconds = compute_s + network.seconds(roundtrips, roundtrips * config["bytes_per_roundtrip"])
+    return seconds, roundtrips, row["status"]
+
+
+def paper_table(configs: list[dict], network: Network, trials: int) -> str:
+    """Table ``tab:memory_size_timings`` of the Concrete OSAM paper."""
+    from paper_figures import DATASETS  # dataset order and display names
+
+    def cell(config: dict, alg: str) -> str:
+        result = step_time(config, alg, network)
+        if result is None:
+            return "--"
+        seconds, roundtrips, status = result
+        text = f"{fmt(seconds)} ({roundtrips:.0f})".replace(",", "")
+        return text + ("$^{\\dagger}$" if status == "short" else "")
+
+    lines = [
+        "% Generated by rust_osam_plus/bench/crypto_timings.py --from-summary -- do not edit by hand.",
+        "\\begin{table}[t]", "\\centering", "\\small", "\\setlength{\\tabcolsep}{4pt}",
+        "\\begin{tabular}{lr|rr|rr|rrr}", "\\hline",
+        " & & Tree & Build & \\multicolumn{2}{c|}{Per round trip} & "
+        f"\\multicolumn{{3}}{{c}}{{{network.name} time, s (round trips)}} \\\\",
+        "Dataset & $\\mathit{bs}$ & (MB) & (s) & ms & KB & BFS step & PR step & DTC run \\\\",
+        "\\hline",
+    ]
+    shorts = []
+    for dataset, (name, _) in DATASETS.items():
+        rows = sorted((c for c in configs if c["dataset"] == dataset), key=lambda c: c["bs"])
+        if not rows:
+            continue
+        stack = (f"\\shortstack[l]{{{name}\\\\$\\log n = {math.log2(rows[0]['n']):.1f}$, "
+                 f"$d={rows[0]['edges'] / rows[0]['n']:.1f}$}}")
+        label = stack if len(rows) == 1 else f"\\multirow{{{len(rows)}}}{{*}}{{{stack}}}"
+        for i, config in enumerate(rows):
+            for alg in PAPER_ALGORITHMS:
+                row = config["algorithms"].get(alg)
+                if row is not None and row["status"] == "short":
+                    shorts.append(f"{name} {NAMES[alg]}: {row['trials']}")
+            build_s = (config["build_ms"] + config["install_ms"]) / 1e3
+            cells = [label if i == 0 else "", str(config["bs"]), f"{config['tree_bytes'] / 1e6:,.0f}".replace(",", ""),
+                     *(fmt(value).replace(",", "") for value in
+                       (build_s, config["ms_per_roundtrip"], config["bytes_per_roundtrip"] / 1e3)),
+                     *(cell(config, alg) for alg in PAPER_ALGORITHMS)]
+            lines.append(" & ".join(cells) + " \\\\")
+        lines.append("\\hline")
+    stash = [c["max_stash"] for c in configs if c["max_stash"] is not None]
+    lines += [
+        "\\end{tabular}",
+        "\\caption{OSAM$^+$ with cryptography: the graph is built in memory and installed into an "
+        "encrypted Path OSAM$^+$ tree (AES-256-GCM, $Z=4$). Tree: size of the encrypted tree. Build: "
+        "building and installing it. Per round trip: client computation and data transferred (the "
+        "requested path and two eviction paths, down and up). "
+        f"{network.name} time: end-to-end time with a ${network.rtt_ms:g}$\\,ms round-trip time and "
+        f"${network.mb_per_s:g}$\\,MB/s, per BFS step, per PageRank step, and per Directed Triangle "
+        f"Count run, averaged over ${trials}$ full-length runs; round trips (reads and public flushes) "
+        "in parentheses. Entries marked -- had no full-length run in $1000$ draws of the entry point"
+        + (f"; $^{{\\dagger}}$fewer full-length runs ({'; '.join(shorts)})" if shorts else "")
+        + ". At $\\mathit{bs}=4096$, only the datasets shown fit in memory."
+        + (f" Maximum client stash occupancy over installation and every run: ${max(stash)}$ blocks."
+           if stash else "") + "}",
+        "\\label{tab:memory_size_timings}", "\\end{table}", "",
+    ]
+    return "\n".join(lines)
+
+
+def print_configurations(configs: list[dict], networks: list[Network]) -> None:
+    print(f"{'dataset':<15}{'bs':>5}{'H':>4}{'tree MB':>10}{'build s':>9}{'ms/RT':>7}{'KB/RT':>8}{'stash':>6}  "
+          + "  ".join(f"{NAMES[a]} {n.name} s (RT)" for a in PAPER_ALGORITHMS for n in networks))
+    for c in configs:
+        times = []
+        for alg in PAPER_ALGORITHMS:
+            for net in networks:
+                result = step_time(c, alg, net)
+                times.append("--" if result is None else f"{result[0]:.2f} ({result[1]:.0f})")
+        print(f"{c['dataset'][:14]:<15}{c['bs']:>5}{c['capacity_log2']:>4}{c['tree_bytes'] / 1e6:>10.0f}"
+              f"{(c['build_ms'] + c['install_ms']) / 1e3:>9.2f}{c['ms_per_roundtrip'] or 0:>7.2f}"
+              f"{c['bytes_per_roundtrip'] / 1e3:>8.1f}{c['max_stash'] if c['max_stash'] is not None else '-':>6}  "
+              + "  ".join(times))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     graph = parser.add_mutually_exclusive_group(required=True)
@@ -302,6 +463,12 @@ def main(argv: list[str] | None = None) -> int:
     graph.add_argument("--n", type=int, help="Erdos-Renyi graph with n vertices (with --d)")
     graph.add_argument("--datasets", nargs="*",
                        help="dataset names, as for launch_rust_tests.py --datasets (none: all)")
+    graph.add_argument("--from-summary", type=Path, metavar="SUMMARY_CSV",
+                       help="run nothing: build the paper table from the crypto rows of a "
+                       "launch_rust_tests.py --mode crypto report (with --from-structures)")
+    parser.add_argument("--from-structures", type=Path, metavar="STRUCTURES_CSV")
+    parser.add_argument("--from-pointer", default="multiwrite",
+                        help="launcher pointer name for --from-summary (default multiwrite)")
     parser.add_argument("--d", type=int, default=20)
     parser.add_argument("--dataset-root", type=Path)
     parser.add_argument("--bs", type=int, nargs="+", default=[64, 4096], choices=(64, 4096))
@@ -323,6 +490,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--latex", type=Path)
     args = parser.parse_args(argv)
     networks = args.network or [Network("WAN", 100, 100), Network("LAN", 1, 1000)]
+
+    if args.from_summary:
+        if not args.from_structures:
+            parser.error("--from-summary needs --from-structures")
+        configs = summary_configurations(args.from_summary.expanduser(), args.from_structures.expanduser(),
+                                         args.from_pointer, args.trials)
+        if not configs:
+            print(f"no crypto {args.from_pointer} runs with {args.trials} trials in {args.from_summary}")
+            return 1
+        print_configurations(configs, networks)
+        if args.latex:
+            path = args.latex.expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(paper_table(configs, networks[0], args.trials))
+            print(f"wrote {path}")
+        return 0
 
     if args.graph:
         graph_files = [str(args.graph.expanduser())]

@@ -439,6 +439,12 @@ def load_datasets(summary_path: Path, structures_path: Path) -> tuple[pd.DataFra
         frame["dataset"] = frame.log.str.split("_").str[0]
     structures["move"] = structures.cache.astype(bool)
     stash = summary[summary["mode"] == "crypto"].copy()
+    # OSAM+ crypto logs from before the write-burst flushes (no OsamPlusFlush in
+    # their build) ran a different eviction schedule; keep them out of the
+    # stash maxima.
+    flushed = set(structures.log[(structures.phase == "build")
+                                  & (structures.structure == "OsamPlusFlush")])
+    stash = stash[(stash.pointer != "multiwrite") | stash.log.isin(flushed)]
     summary, structures = _prefer_dry_run(summary), _prefer_dry_run(structures)
     summary.attrs["stash"] = stash
     return summary, structures
@@ -568,8 +574,9 @@ def dataset_table(summary, structures, bs: int = 64, table_label: str = "tab:rea
                       "entry point (" + "; ".join(notes) + " runs).")
     lines += [
         "\\end{tabular}" + fit_close("\\textwidth"),
-        "\\caption{Base-two logarithm of round trips on each real dataset (reads only for OSAM$^+$, "
-        "whose writes stay in the stash and are evicted by reads; reads plus writes otherwise): the "
+        "\\caption{Base-two logarithm of round trips on each real dataset (reads and public flushes "
+        "for OSAM$^+$, whose writes stay in the stash and are evicted by reads; reads plus writes "
+        "otherwise): the "
         "total for Build and the cost per step for the algorithms (a visited vertex for BFS, DFS, "
         "Dijkstra, and Prim; a move for RW and PR; a neighbor-list retrieval for CD; the whole run for "
         "DTC), averaged over $50$ full-length runs. In parentheses: the coefficient of variation "

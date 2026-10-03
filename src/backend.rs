@@ -6,177 +6,137 @@
 // of this source tree. You may select, at your option, one of the above-listed licenses.
 
 //! Encrypted and plaintext backend options for Path OSAM+.
+//!
+//! Buckets are numbered 1..=capacity-1 in heap order (bucket `i` has children
+//! `2i` and `2i + 1`), as in the rest of the crate.
 
 use crate::{
     bucket::{Bucket, LowLevelBytes, PathOsamPlusBlock},
     BucketSize, Identifier, OsamPlusBlock, OsamPlusError,
 };
 use aes_gcm::{
-    aead::{Aead, Generate, Key, KeyInit},
-    Aes256Gcm, Nonce,
+    aead::{AeadInOut, Generate, Key, KeyInit, Nonce, Tag},
+    Aes256Gcm,
 };
-use cipher::typenum::U12;
 
-#[derive(Debug)]
-/// The physical memory the OSAM+ interacts with that is encrypted using `Aes256Gcm`.
-struct EncryptedBackend {
-    physical_memory: Vec<Vec<u8>>,
+/// Bytes of the AES-GCM tag stored after each encrypted bucket.
+const TAG_BYTES: usize = 16;
+
+/// The physical memory the OSAM+ interacts with, encrypted with `Aes256Gcm`.
+///
+/// The server's memory is one flat arena of fixed-size slots, one per bucket:
+/// the bucket's ciphertext followed by its tag. The client keeps the nonce of
+/// each bucket's current ciphertext (a 64-bit counter value, so nonces never
+/// repeat under the backend's random key); a server that returns an old or
+/// altered ciphertext fails authentication. Nonce 0 marks a bucket that was
+/// never written, which reads as a bucket of dummies, so creating a backend
+/// costs no encryption: `bulk_load` or the first eviction writes each bucket.
+struct EncryptedBackend<V: OsamPlusBlock, const Z: BucketSize> {
+    arena: Vec<u8>,
+    nonces: Vec<u64>,
     cipher: Aes256Gcm,
-    nonces: Vec<Nonce<U12>>,
-    /// Counter for fresh nonces. The key is random per backend, so a counter
-    /// gives unique nonces without searching the nonces already in use.
     next_nonce: u64,
+    /// Bytes of one serialized bucket; a slot adds the tag.
+    plaintext_bytes: usize,
+    /// Client-side buffer the downloaded ciphertext is decrypted in.
+    scratch: Vec<u8>,
+    _blocks: std::marker::PhantomData<V>,
 }
 
-impl EncryptedBackend {
-    pub fn new<V: OsamPlusBlock, const Z: BucketSize>(
-        block_capacity: Identifier,
-    ) -> Result<Box<Self>, OsamPlusError> {
-        // Convert this number to usize for reuse several times later.
-        let backend_size = usize::try_from(block_capacity - 1)?;
+impl<V: OsamPlusBlock, const Z: BucketSize> std::fmt::Debug for EncryptedBackend<V, Z> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncryptedBackend")
+            .field("buckets", &self.nonces.len())
+            .field("next_nonce", &self.next_nonce)
+            .finish()
+    }
+}
 
-        // Generate key, cipher, and vector of unique nonces (one for each bucket) for encryption.
-        let key = Key::<Aes256Gcm>::generate();
-        let cipher = Aes256Gcm::new(&key);
-        // Intialize physical memory in backend so `encrypt_bucket` can be called correctly.
-        let physical_memory = Vec::new();
-        let mut backend = Self {
-            physical_memory,
-            cipher,
-            nonces: Vec::with_capacity(backend_size),
-            next_nonce: 0,
-        };
-        for _ in 0..backend_size {
-            let nonce = backend.fresh_nonce();
-            backend.nonces.push(nonce);
-        }
-
-        // `physical_memory` holds `block_capacity - 1` buckets, each storing up to Z blocks.
-        // The number of leaves is `block_capacity` / 2, which the original Path ORAM paper's experiments
-        // found was sufficient to keep the stash size small with high probability.
-        let mut buckets = Vec::new();
-        buckets.resize(backend_size, Bucket::<V, Z>::default());
-        for (i, bucket) in buckets.iter().enumerate().take(backend_size) {
-            let ciphertext = backend.encrypt_bucket(*bucket, i);
-            backend.physical_memory.push(ciphertext);
-        }
-
-        Ok(Box::new(backend))
+impl<V: OsamPlusBlock, const Z: BucketSize> EncryptedBackend<V, Z> {
+    fn new(block_capacity: Identifier) -> Result<Self, OsamPlusError> {
+        let buckets = usize::try_from(block_capacity - 1)?;
+        let plaintext_bytes = Bucket::<V, Z>::byte_count();
+        Ok(Self {
+            arena: vec![0u8; buckets * (plaintext_bytes + TAG_BYTES)],
+            nonces: vec![0; buckets],
+            cipher: Aes256Gcm::new(&Key::<Aes256Gcm>::generate()),
+            next_nonce: 1,
+            plaintext_bytes,
+            scratch: vec![0u8; plaintext_bytes],
+            _blocks: std::marker::PhantomData,
+        })
     }
 
-    pub fn block_capacity(&self) -> usize {
-        self.physical_memory.len()
+    fn block_capacity(&self) -> usize {
+        self.nonces.len()
     }
 
-    /// A nonce never used before under this backend's key (a 64-bit counter).
-    fn fresh_nonce(&mut self) -> Nonce<U12> {
+    fn nonce(counter: u64) -> Nonce<Aes256Gcm> {
         let mut bytes = [0u8; 12];
-        bytes[..8].copy_from_slice(&self.next_nonce.to_le_bytes());
-        self.next_nonce += 1;
-        Nonce::from(bytes)
+        bytes[..8].copy_from_slice(&counter.to_le_bytes());
+        Nonce::<Aes256Gcm>::from(bytes)
     }
 
-    /// Encrypt a bucket with a nonce.
-    pub fn encrypt_bucket<V: OsamPlusBlock, const Z: BucketSize>(
-        &mut self,
-        bucket: Bucket<V, Z>,
-        index: usize,
-    ) -> Vec<u8> {
-        let nonce = self.nonces[index];
-        let plaintext = bucket.to_bytes_vec();
-        let ciphertext = self.cipher.encrypt(&nonce, plaintext.as_ref()).unwrap();
-
-        ciphertext
-    }
-
-    /// Decrypt a ciphertext with its nonce to produce a bucket.
-    pub fn decrypt_bucket<V: OsamPlusBlock, const Z: BucketSize>(
-        &mut self,
-        ciphertext: Vec<u8>,
-        index: usize,
-    ) -> Option<Bucket<V, Z>> {
-        let nonce = self.nonces[index];
-        // Attempt to decrypt ciphertext from nonce.
-        // Decryption may fail if the last time this bucket was decrypted, it was along a path
-        // that was not evicted. That is, the bucket was downloaded but not reuploaded back to
-        // `physical_memory`. `decrypt_bucket` always chooses a new unique nonce to avoid repetition.
-        // Because the bucket is not uploaded back to the server, `physical_memory` still has the old
-        // data corresponding to the old nonce. Decrypting the old data with a new nonce fails, but this
-        // behavior is fine because the data is outdated and need not be recovered. To avoid decryption
-        // errors or using old data, the other approach is to encrypt a dummy bucket in place of the
-        // single read path.
-        let output: Option<Bucket<V, Z>>;
-        let result = self.cipher.decrypt(&nonce, ciphertext.as_ref());
-        match result {
-            Ok(plaintext) => {
-                let bucket = Bucket::<V, Z>::reconstruct(&plaintext);
-                output = Some(bucket);
-                // Generate a new unique nonce for the future.
-                self.nonces[index] = self.fresh_nonce();
-            }
-            Err(_) => {
-                output = None;
-            }
-        }
-        output
-    }
-
-    pub fn read_bucket_to_stash<V: OsamPlusBlock, const Z: BucketSize>(
+    /// Decrypts bucket `bucket_index` into `blocks[Z * offset..]`.
+    fn read_bucket_to_stash(
         &mut self,
         blocks: &mut [PathOsamPlusBlock<V>],
         bucket_index: usize,
         offset: usize,
     ) -> usize {
-        let ciphertext = self.physical_memory[bucket_index - 1].clone();
-        // Ignore bucket if decryption fails.
-        if let Some(bucket) = self.decrypt_bucket::<V, Z>(ciphertext, bucket_index - 1) {
-            for slot_index in 0..Z {
-                blocks[Z * offset + slot_index] = bucket.blocks[slot_index];
-            }
-            offset + 1
-        } else {
-            for slot_index in 0..Z {
-                blocks[Z * offset + slot_index] = PathOsamPlusBlock::<V>::dummy();
-            }
-            offset
+        let slots = &mut blocks[Z * offset..Z * (offset + 1)];
+        let counter = self.nonces[bucket_index - 1];
+        if counter == 0 {
+            slots.fill(PathOsamPlusBlock::<V>::dummy());
+            return offset + 1;
         }
+        let slot_bytes = self.plaintext_bytes + TAG_BYTES;
+        let slot = &self.arena[(bucket_index - 1) * slot_bytes..][..slot_bytes];
+        let (ciphertext, tag) = slot.split_at(self.plaintext_bytes);
+        self.scratch.copy_from_slice(ciphertext);
+        let tag = Tag::<Aes256Gcm>::try_from(tag).expect("tag length");
+        self.cipher
+            .decrypt_inout_detached(
+                &Self::nonce(counter),
+                b"",
+                self.scratch.as_mut_slice().into(),
+                &tag,
+            )
+            .expect("bucket failed authentication");
+        let size = PathOsamPlusBlock::<V>::byte_count();
+        for (block, chunk) in slots.iter_mut().zip(self.scratch.chunks_exact(size)) {
+            *block = PathOsamPlusBlock::<V>::reconstruct(chunk);
+        }
+        offset + 1
     }
 
-    pub fn write_bucket_from_stash<V: OsamPlusBlock, const Z: BucketSize>(
+    /// Encrypts `blocks[offset..offset + Z]` into bucket `bucket_index` under a
+    /// fresh nonce and replaces those stash slots with dummies.
+    fn write_bucket_from_stash(
         &mut self,
         blocks: &mut [PathOsamPlusBlock<V>],
         bucket_index: usize,
         offset: usize,
     ) {
-        let mut bucket_to_write = Bucket::<V, Z>::default();
-        for slot_number in 0..Z {
-            let stash_index = offset + slot_number;
-            bucket_to_write.blocks[slot_number] = blocks[stash_index];
-            blocks[stash_index] = PathOsamPlusBlock::<V>::dummy();
+        let counter = self.next_nonce;
+        self.next_nonce += 1;
+        self.nonces[bucket_index - 1] = counter;
+        let slot_bytes = self.plaintext_bytes + TAG_BYTES;
+        let slot = &mut self.arena[(bucket_index - 1) * slot_bytes..][..slot_bytes];
+        let (plaintext, tag_out) = slot.split_at_mut(self.plaintext_bytes);
+        let size = PathOsamPlusBlock::<V>::byte_count();
+        for (block, chunk) in blocks[offset..offset + Z]
+            .iter_mut()
+            .zip(plaintext.chunks_exact_mut(size))
+        {
+            block.write_bytes(chunk);
+            block.set_dummy();
         }
-        let ciphertext = self.encrypt_bucket(bucket_to_write, bucket_index - 1);
-        self.physical_memory[bucket_index - 1] = ciphertext;
-    }
-
-    pub fn print_physical_memory<V: OsamPlusBlock, const Z: BucketSize>(&mut self) {
-        println!("Physical Memory: ");
-        let mut blocks = vec![PathOsamPlusBlock::<V>::dummy(); Z];
-        for i in 1..(self.block_capacity() + 1) {
-            print!("Bucket {}: ", i);
-            self.read_bucket_to_stash::<V, Z>(&mut blocks, i, 0);
-            for block in blocks.iter().take(Z) {
-                if block.ct_is_dummy().into() {
-                    print!("(dummy) ");
-                } else {
-                    print!(
-                        "({}, {}, {:?}) ",
-                        block.identifier, block.position, block.value
-                    );
-                }
-            }
-            self.write_bucket_from_stash::<V, Z>(&mut blocks, i, 0);
-            println!();
-        }
+        let tag = self
+            .cipher
+            .encrypt_inout_detached(&Self::nonce(counter), b"", plaintext.into())
+            .expect("bucket encryption");
+        tag_out.copy_from_slice(&tag);
     }
 }
 
@@ -187,54 +147,107 @@ struct PlaintextBackend<V: OsamPlusBlock, const Z: BucketSize> {
 }
 
 impl<V: OsamPlusBlock, const Z: BucketSize> PlaintextBackend<V, Z> {
-    pub fn new(block_capacity: Identifier) -> Result<Self, OsamPlusError> {
-        let mut physical_memory = Vec::new();
-        physical_memory.resize(
-            usize::try_from(block_capacity - 1)?,
-            Bucket::<V, Z>::default(),
-        );
-        Ok(Self { physical_memory })
+    fn new(block_capacity: Identifier) -> Result<Self, OsamPlusError> {
+        Ok(Self {
+            physical_memory: vec![Bucket::<V, Z>::default(); usize::try_from(block_capacity - 1)?],
+        })
     }
 
+    fn read_bucket_to_stash(
+        &mut self,
+        blocks: &mut [PathOsamPlusBlock<V>],
+        bucket_index: usize,
+        offset: usize,
+    ) -> usize {
+        let bucket = &mut self.physical_memory[bucket_index - 1];
+        for (slot, block) in blocks[Z * offset..Z * (offset + 1)]
+            .iter_mut()
+            .zip(bucket.blocks.iter_mut())
+        {
+            *slot = std::mem::replace(block, PathOsamPlusBlock::<V>::dummy());
+        }
+        offset + 1
+    }
+
+    fn write_bucket_from_stash(
+        &mut self,
+        blocks: &mut [PathOsamPlusBlock<V>],
+        bucket_index: usize,
+        offset: usize,
+    ) {
+        let bucket = &mut self.physical_memory[bucket_index - 1];
+        for (block, slot) in bucket
+            .blocks
+            .iter_mut()
+            .zip(blocks[offset..offset + Z].iter_mut())
+        {
+            *block = std::mem::replace(slot, PathOsamPlusBlock::<V>::dummy());
+        }
+    }
+}
+
+#[derive(Debug)]
+enum BackendMethod<V: OsamPlusBlock, const Z: BucketSize> {
+    Encrypted(Box<EncryptedBackend<V, Z>>),
+    Plaintext(PlaintextBackend<V, Z>),
+}
+
+/// The server-side tree of buckets, encrypted or in plaintext.
+#[derive(Debug)]
+pub struct Backend<V: OsamPlusBlock, const Z: BucketSize>(BackendMethod<V, Z>);
+
+impl<V: OsamPlusBlock, const Z: BucketSize> Backend<V, Z> {
+    pub fn new(block_capacity: Identifier, is_encrypted: bool) -> Result<Self, OsamPlusError> {
+        Ok(Self(if is_encrypted {
+            BackendMethod::Encrypted(Box::new(EncryptedBackend::new(block_capacity)?))
+        } else {
+            BackendMethod::Plaintext(PlaintextBackend::new(block_capacity)?)
+        }))
+    }
+
+    /// The number of buckets.
     pub fn block_capacity(&self) -> usize {
-        self.physical_memory.len()
+        match &self.0 {
+            BackendMethod::Encrypted(e) => e.block_capacity(),
+            BackendMethod::Plaintext(p) => p.physical_memory.len(),
+        }
     }
 
+    /// Downloads bucket `bucket_index` into stash slots `Z * offset..Z * (offset + 1)`
+    /// and returns `offset + 1`.
     pub fn read_bucket_to_stash(
         &mut self,
         blocks: &mut [PathOsamPlusBlock<V>],
         bucket_index: usize,
         offset: usize,
     ) -> usize {
-        let mut bucket = self.physical_memory[bucket_index - 1];
-        for slot_index in 0..Z {
-            blocks[Z * offset + slot_index] = bucket.blocks[slot_index];
-            bucket.blocks[slot_index] = PathOsamPlusBlock::<V>::dummy();
+        match &mut self.0 {
+            BackendMethod::Encrypted(e) => e.read_bucket_to_stash(blocks, bucket_index, offset),
+            BackendMethod::Plaintext(p) => p.read_bucket_to_stash(blocks, bucket_index, offset),
         }
-        self.physical_memory[bucket_index - 1] = bucket;
-        offset + 1
     }
 
+    /// Uploads stash slots `offset..offset + Z` as bucket `bucket_index`,
+    /// leaving dummies in their place.
     pub fn write_bucket_from_stash(
         &mut self,
         blocks: &mut [PathOsamPlusBlock<V>],
         bucket_index: usize,
         offset: usize,
     ) {
-        let bucket_to_write = &mut self.physical_memory[bucket_index - 1];
-        for slot_number in 0..Z {
-            let stash_index = offset + slot_number;
-            bucket_to_write.blocks[slot_number] = blocks[stash_index];
-            blocks[stash_index] = PathOsamPlusBlock::<V>::dummy();
+        match &mut self.0 {
+            BackendMethod::Encrypted(e) => e.write_bucket_from_stash(blocks, bucket_index, offset),
+            BackendMethod::Plaintext(p) => p.write_bucket_from_stash(blocks, bucket_index, offset),
         }
     }
 
-    pub fn print_physical_memory(&self) {
+    pub fn print_physical_memory(&mut self) {
         println!("Physical Memory: ");
-        for i in 0..(self.physical_memory.len()) {
-            print!("Bucket {}: ", i + 1);
-            let bucket = self.physical_memory[i];
-            for block in bucket.blocks.iter() {
+        let mut blocks = vec![PathOsamPlusBlock::<V>::dummy(); Z];
+        for i in 1..=self.block_capacity() {
+            print!("Bucket {}: ", i);
+            self.read_bucket_to_stash(&mut blocks, i, 0);
+            for block in blocks.iter() {
                 if block.ct_is_dummy().into() {
                     print!("(dummy) ");
                 } else {
@@ -244,72 +257,8 @@ impl<V: OsamPlusBlock, const Z: BucketSize> PlaintextBackend<V, Z> {
                     );
                 }
             }
+            self.write_bucket_from_stash(&mut blocks, i, 0);
             println!();
-        }
-    }
-}
-
-#[derive(Debug)]
-enum BackendMethod<V: OsamPlusBlock, const Z: BucketSize> {
-    Encrypted(Box<EncryptedBackend>),
-    Plaintext(PlaintextBackend<V, Z>),
-}
-
-#[derive(Debug)]
-pub struct Backend<V: OsamPlusBlock, const Z: BucketSize>(BackendMethod<V, Z>);
-
-impl<V: OsamPlusBlock, const Z: BucketSize> Backend<V, Z> {
-    pub fn new(block_capacity: Identifier, is_encrypted: bool) -> Result<Self, OsamPlusError> {
-        if is_encrypted {
-            Ok(Self(BackendMethod::Encrypted(
-                EncryptedBackend::new::<V, Z>(block_capacity)?,
-            )))
-        } else {
-            Ok(Self(BackendMethod::Plaintext(PlaintextBackend::new(
-                block_capacity,
-            )?)))
-        }
-    }
-
-    pub fn block_capacity(&self) -> usize {
-        match &self.0 {
-            BackendMethod::Encrypted(e) => e.block_capacity(),
-            BackendMethod::Plaintext(p) => p.block_capacity(),
-        }
-    }
-
-    pub fn read_bucket_to_stash(
-        &mut self,
-        blocks: &mut [PathOsamPlusBlock<V>],
-        bucket_index: usize,
-        offset: usize,
-    ) -> usize {
-        match &mut self.0 {
-            BackendMethod::Encrypted(e) => {
-                e.read_bucket_to_stash::<V, Z>(blocks, bucket_index, offset)
-            }
-            BackendMethod::Plaintext(p) => p.read_bucket_to_stash(blocks, bucket_index, offset),
-        }
-    }
-
-    pub fn write_bucket_from_stash(
-        &mut self,
-        blocks: &mut [PathOsamPlusBlock<V>],
-        bucket_index: usize,
-        offset: usize,
-    ) {
-        match &mut self.0 {
-            BackendMethod::Encrypted(e) => {
-                e.write_bucket_from_stash::<V, Z>(blocks, bucket_index, offset)
-            }
-            BackendMethod::Plaintext(p) => p.write_bucket_from_stash(blocks, bucket_index, offset),
-        }
-    }
-
-    pub fn print_physical_memory(&mut self) {
-        match &mut self.0 {
-            BackendMethod::Encrypted(e) => e.print_physical_memory::<V, Z>(),
-            BackendMethod::Plaintext(p) => p.print_physical_memory(),
         }
     }
 }

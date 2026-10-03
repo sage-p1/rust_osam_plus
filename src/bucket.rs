@@ -14,11 +14,18 @@ use rand::{
 };
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
-/// A trait that works with datatypes and translates them into or from byte vectors/arrays.
-/// This is necessary to work with `Aes256Gcm`, which only seems to encrypt references to `Vec<u8>` objects.
+/// A trait that works with datatypes and translates them into or from bytes.
+/// Buckets are serialized with it before encryption with `Aes256Gcm`.
 pub trait LowLevelBytes: Sized {
     /// Breakdown value to a vector of bytes.
-    fn to_bytes_vec(&self) -> Vec<u8>;
+    fn to_bytes_vec(&self) -> Vec<u8> {
+        let mut bytes = vec![0u8; Self::byte_count()];
+        self.write_bytes(&mut bytes);
+        bytes
+    }
+
+    /// Writes the value's `byte_count()` bytes into `out`, without allocating.
+    fn write_bytes(&self, out: &mut [u8]);
 
     /// Get the number of bytes required to represent the current value.
     fn byte_count() -> usize;
@@ -27,117 +34,30 @@ pub trait LowLevelBytes: Sized {
     fn reconstruct(slice: &[u8]) -> Self;
 }
 
-/// Implement trait for all possible `OsamPlusBlock` V values.
-impl LowLevelBytes for u8 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
+macro_rules! impl_low_level_bytes_for_integers {
+    ($($t:ty),*) => {$(
+        impl LowLevelBytes for $t {
+            fn write_bytes(&self, out: &mut [u8]) {
+                out.copy_from_slice(&self.to_le_bytes());
+            }
 
-    fn byte_count() -> usize {
-        1
-    }
+            fn byte_count() -> usize {
+                std::mem::size_of::<$t>()
+            }
 
-    fn reconstruct(slice: &[u8]) -> Self {
-        u8::from_le_bytes(slice.try_into().unwrap())
-    }
+            fn reconstruct(slice: &[u8]) -> Self {
+                <$t>::from_le_bytes(slice.try_into().unwrap())
+            }
+        }
+    )*};
 }
 
-impl LowLevelBytes for u16 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
+impl_low_level_bytes_for_integers!(u8, u16, u32, u64, i8, i16, i32, i64);
 
-    fn byte_count() -> usize {
-        2
-    }
-
-    fn reconstruct(slice: &[u8]) -> Self {
-        u16::from_le_bytes(slice.try_into().unwrap())
-    }
-}
-
-impl LowLevelBytes for u32 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-
-    fn byte_count() -> usize {
-        4
-    }
-
-    fn reconstruct(slice: &[u8]) -> Self {
-        u32::from_le_bytes(slice.try_into().unwrap())
-    }
-}
-
-impl LowLevelBytes for u64 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-
-    fn byte_count() -> usize {
-        8
-    }
-
-    fn reconstruct(slice: &[u8]) -> Self {
-        u64::from_le_bytes(slice.try_into().unwrap())
-    }
-}
-
-impl LowLevelBytes for i8 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-
-    fn byte_count() -> usize {
-        1
-    }
-
-    fn reconstruct(slice: &[u8]) -> Self {
-        i8::from_le_bytes(slice.try_into().unwrap())
-    }
-}
-
-impl LowLevelBytes for i16 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-
-    fn byte_count() -> usize {
-        2
-    }
-
-    fn reconstruct(slice: &[u8]) -> Self {
-        i16::from_le_bytes(slice.try_into().unwrap())
-    }
-}
-
-impl LowLevelBytes for i32 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-
-    fn byte_count() -> usize {
-        4
-    }
-
-    fn reconstruct(slice: &[u8]) -> Self {
-        i32::from_le_bytes(slice.try_into().unwrap())
-    }
-}
-
-impl LowLevelBytes for i64 {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-
-    fn byte_count() -> usize {
-        8
-    }
-
-    fn reconstruct(slice: &[u8]) -> Self {
-        i64::from_le_bytes(slice.try_into().unwrap())
-    }
+/// The all-ones byte mask if `choice` is set, zero otherwise.
+#[inline]
+fn byte_mask(choice: Choice) -> u8 {
+    0u8.wrapping_sub(choice.unwrap_u8())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,19 +82,36 @@ impl<const B: BlockSize> Default for BlockValue<B> {
 
 impl<const B: BlockSize> OsamPlusBlock for BlockValue<B> {}
 
+// Masked byte loops: constant time like `u8::conditional_select`, but in
+// place and without building a temporary block, so the stash's oblivious
+// scans and sort move each byte once.
 impl<const B: BlockSize> ConditionallySelectable for BlockValue<B> {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
-        let mut result = BlockValue::default();
-        for i in 0..B {
-            result.data[i] = u8::conditional_select(&a.data[i], &b.data[i], choice);
-        }
+        let mut result = *a;
+        result.conditional_assign(b, choice);
         result
+    }
+
+    fn conditional_assign(&mut self, other: &Self, choice: Choice) {
+        let mask = byte_mask(choice);
+        for (x, y) in self.data.iter_mut().zip(other.data.iter()) {
+            *x ^= mask & (*x ^ *y);
+        }
+    }
+
+    fn conditional_swap(a: &mut Self, b: &mut Self, choice: Choice) {
+        let mask = byte_mask(choice);
+        for (x, y) in a.data.iter_mut().zip(b.data.iter_mut()) {
+            let t = mask & (*x ^ *y);
+            *x ^= t;
+            *y ^= t;
+        }
     }
 }
 
 impl<const B: usize> LowLevelBytes for BlockValue<B> {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        self.data.to_vec()
+    fn write_bytes(&self, out: &mut [u8]) {
+        out.copy_from_slice(&self.data);
     }
 
     fn byte_count() -> usize {
@@ -217,6 +154,22 @@ impl<V: OsamPlusBlock> PathOsamPlusBlock<V> {
         }
     }
 
+    /// Turns this block into a dummy in place. Only the metadata changes: a
+    /// dummy's value is never read, so the payload is left as it was rather
+    /// than zeroed (which costs a full block write at large block sizes).
+    pub fn set_dummy(&mut self) {
+        self.identifier = Self::DUMMY_IDENTIFIER;
+        self.position = Self::DUMMY_POSITION;
+    }
+
+    /// `set_dummy` if `choice` is set, in constant time.
+    pub fn conditional_set_dummy(&mut self, choice: Choice) {
+        self.identifier
+            .conditional_assign(&Self::DUMMY_IDENTIFIER, choice);
+        self.position
+            .conditional_assign(&Self::DUMMY_POSITION, choice);
+    }
+
     pub fn ct_is_dummy(&self) -> Choice {
         self.position.ct_eq(&Self::DUMMY_POSITION)
     }
@@ -249,46 +202,38 @@ impl<V: ConditionallySelectable> ConditionallySelectable for PathOsamPlusBlock<V
             position,
         }
     }
+
+    fn conditional_assign(&mut self, other: &Self, choice: Choice) {
+        self.value.conditional_assign(&other.value, choice);
+        self.identifier
+            .conditional_assign(&other.identifier, choice);
+        self.position.conditional_assign(&other.position, choice);
+    }
+
+    fn conditional_swap(a: &mut Self, b: &mut Self, choice: Choice) {
+        V::conditional_swap(&mut a.value, &mut b.value, choice);
+        Identifier::conditional_swap(&mut a.identifier, &mut b.identifier, choice);
+        TreeIndex::conditional_swap(&mut a.position, &mut b.position, choice);
+    }
 }
 
 impl<V: OsamPlusBlock> LowLevelBytes for PathOsamPlusBlock<V> {
-    // Convert `PathOsamPlusBlock` structure into a byte vector containing its identifier, position, and value.
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        let mut identifier_bytes = self.identifier.to_le_bytes().to_vec();
-        let mut position_bytes = self.position.to_le_bytes().to_vec();
-        let mut value_bytes = self.value.to_bytes_vec();
-
-        identifier_bytes.append(&mut position_bytes);
-        identifier_bytes.append(&mut value_bytes);
-        identifier_bytes
+    // Layout: identifier, position, value (little endian).
+    fn write_bytes(&self, out: &mut [u8]) {
+        out[0..8].copy_from_slice(&self.identifier.to_le_bytes());
+        out[8..16].copy_from_slice(&self.position.to_le_bytes());
+        self.value.write_bytes(&mut out[16..]);
     }
 
-    // Compute the total byte count incurred by the identifier, position, and value.
     fn byte_count() -> usize {
-        let identifier_count = usize::try_from(Identifier::BITS).unwrap() / 8;
-        let position_count = usize::try_from(TreeIndex::BITS).unwrap() / 8;
-        let value_count = V::byte_count();
-        identifier_count + position_count + value_count
+        Identifier::byte_count() + TreeIndex::byte_count() + V::byte_count()
     }
 
-    // Rebuild a `PathOsamPlusBlock` object from a byte slice.
     fn reconstruct(block_slice: &[u8]) -> Self {
-        let identifier_end = Identifier::byte_count();
-        let position_end = identifier_end + TreeIndex::byte_count();
-        let value_end = position_end + V::byte_count();
-
-        let identifier_slice = &block_slice[0..identifier_end];
-        let position_slice = &block_slice[identifier_end..position_end];
-        let value_slice = &block_slice[position_end..value_end];
-
-        let identifier = u64::from_le_bytes(identifier_slice.try_into().unwrap());
-        let position = u64::from_le_bytes(position_slice.try_into().unwrap());
-        let value = V::reconstruct(value_slice);
-
         Self {
-            value,
-            identifier,
-            position,
+            identifier: u64::from_le_bytes(block_slice[0..8].try_into().unwrap()),
+            position: u64::from_le_bytes(block_slice[8..16].try_into().unwrap()),
+            value: V::reconstruct(&block_slice[16..16 + V::byte_count()]),
         }
     }
 }
@@ -342,31 +287,24 @@ impl<V: OsamPlusBlock, const Z: BucketSize> ConditionallySelectable for Bucket<V
 impl<V: OsamPlusBlock, const Z: BucketSize> OsamPlusBlock for Bucket<V, Z> {}
 
 impl<V: OsamPlusBlock, const Z: BucketSize> LowLevelBytes for Bucket<V, Z> {
-    fn to_bytes_vec(&self) -> Vec<u8> {
-        let mut bucket_vec = Vec::new();
-        for block in self.blocks.iter() {
-            let mut block_vec = block.to_bytes_vec();
-            bucket_vec.append(&mut block_vec);
+    fn write_bytes(&self, out: &mut [u8]) {
+        let size = PathOsamPlusBlock::<V>::byte_count();
+        for (block, chunk) in self.blocks.iter().zip(out.chunks_exact_mut(size)) {
+            block.write_bytes(chunk);
         }
-        bucket_vec
     }
 
     fn byte_count() -> usize {
-        let block_byte_count = PathOsamPlusBlock::<V>::byte_count();
-        block_byte_count * Z
+        PathOsamPlusBlock::<V>::byte_count() * Z
     }
 
     fn reconstruct(bucket_slice: &[u8]) -> Self {
         assert_eq!(bucket_slice.len(), Bucket::<V, Z>::byte_count());
+        let size = PathOsamPlusBlock::<V>::byte_count();
         let mut blocks = [PathOsamPlusBlock::<V>::dummy(); Z];
-        for i in 0..Z {
-            let block_byte_count = PathOsamPlusBlock::<V>::byte_count();
-            let block_slice =
-                &bucket_slice[(i * block_byte_count)..(i * block_byte_count + block_byte_count)];
-            let block = PathOsamPlusBlock::<V>::reconstruct(block_slice);
-            blocks[i] = block;
+        for (block, chunk) in blocks.iter_mut().zip(bucket_slice.chunks_exact(size)) {
+            *block = PathOsamPlusBlock::<V>::reconstruct(chunk);
         }
-
         Self { blocks }
     }
 }

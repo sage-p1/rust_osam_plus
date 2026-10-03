@@ -20,7 +20,6 @@ pub(crate) trait CompleteBinaryTreeIndex
 where
     Self: Sized,
 {
-    fn ct_node_on_path(&self, depth: TreeHeight, height: TreeHeight) -> Self;
     fn random_leaf<R: RngCore + CryptoRng>(
         tree_height: TreeHeight,
         rng: &mut R,
@@ -30,17 +29,6 @@ where
 }
 
 impl CompleteBinaryTreeIndex for TreeIndex {
-    // A TreeIndex can have any nonzero value.
-    fn ct_node_on_path(&self, depth: TreeHeight, height: TreeHeight) -> Self {
-        // We maintain the invariant that all TreeIndex values are nonzero.
-        assert_ne!(*self, 0);
-        // We only call this method when the receiver is a leaf.
-        assert!(self.is_leaf(height));
-
-        let shift = height - depth;
-        self >> shift
-    }
-
     fn random_leaf<R: RngCore + CryptoRng>(
         tree_height: TreeHeight,
         rng: &mut R,
