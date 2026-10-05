@@ -262,12 +262,12 @@ impl<V, C: ValueCodec<V>> ValueCodec<RaryCell<V>> for RaryCellValueCodec<C> {
             // Compact node: tag, parent id, group length, one id per slot
             // (0 = empty) = 8b + 10 bytes. The node's own index is omitted:
             // readers recover it from where their address sits in `group`.
+            // Lengths below 255 take one byte; longer groups (b >= 256) write
+            // 255 and then the length as a u16, so 8b + 12 bytes.
             RaryCell::Node { parent, group, .. } => {
                 output.push(1);
                 put_tree_address(Some(*parent), output)?;
-                output.push(u8::try_from(group.len()).map_err(|_| {
-                    SamError::Backend("r-ary groups are limited to 255 slots".into())
-                })?);
+                put_group_length(group.len(), output)?;
                 for member in group.iter() {
                     put_tree_address(*member, output)?;
                 }
@@ -282,7 +282,7 @@ impl<V, C: ValueCodec<V>> ValueCodec<RaryCell<V>> for RaryCellValueCodec<C> {
             1 => {
                 let parent = get_tree_address(input)?
                     .ok_or_else(|| SamError::Backend("r-ary node has no parent".into()))?;
-                let length = usize::from(get_u8(input)?);
+                let length = get_group_length(input)?;
                 let mut group = Vec::with_capacity(length);
                 for _ in 0..length {
                     group.push(get_tree_address(input)?);
@@ -309,6 +309,27 @@ fn take<'a>(input: &mut &'a [u8], length: usize) -> Result<&'a [u8], SamError> {
 
 fn get_u8(input: &mut &[u8]) -> Result<u8, SamError> {
     Ok(take(input, 1)?[0])
+}
+
+/// One byte below 255; otherwise 255 followed by the length as a u16.
+fn put_group_length(length: usize, output: &mut Vec<u8>) -> Result<(), SamError> {
+    if length < 255 {
+        output.push(length as u8);
+    } else {
+        let length = u16::try_from(length).map_err(|_| {
+            SamError::Backend("r-ary groups are limited to 65535 slots".into())
+        })?;
+        output.push(255);
+        output.extend_from_slice(&length.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn get_group_length(input: &mut &[u8]) -> Result<usize, SamError> {
+    Ok(match get_u8(input)? {
+        255 => usize::from(u16::from_le_bytes(take(input, 2)?.try_into().unwrap())),
+        length => usize::from(length),
+    })
 }
 
 fn put_length(length: usize, output: &mut Vec<u8>) -> Result<(), SamError> {
@@ -438,6 +459,21 @@ mod tests {
             panic!("decoded r-ary node as a root");
         };
         assert_eq!(index, UNRESOLVED_RARY_INDEX);
+        // Groups of 255 slots or more (b >= 256) take a three-byte length.
+        for slots in [254usize, 255, 512] {
+            let group: Vec<Option<Address>> = (0..slots)
+                .map(|i| (i % 3 != 0).then_some(Address::Oblivious(i as u64 + 1)))
+                .collect();
+            let node = RaryCell::<u64>::Node { parent: a, group: group.clone().into(), index: 0 };
+            let mut bytes = Vec::new();
+            RaryCellValueCodec::new(U64ValueCodec).encode_value(&node, &mut bytes).unwrap();
+            assert_eq!(bytes.len(), 8 * slots + if slots < 255 { 10 } else { 12 });
+            let decoded = RaryCellValueCodec::<U64ValueCodec>::new(U64ValueCodec)
+                .decode_value(&mut bytes.as_slice())
+                .unwrap();
+            let RaryCell::Node { group: back, .. } = decoded else { panic!("root") };
+            assert_eq!(back.to_vec(), group);
+        }
         round_trip::<_, _, 128>(
             FixedSizeCodec::new(OriginalCellValueCodec::new(U64ValueCodec)),
             OriginalCell::Node(OriginalNode {

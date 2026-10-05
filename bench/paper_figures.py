@@ -106,7 +106,8 @@ CONCRETE_SERIES = (
 BOSAM_SERIES = (
     Series("BOSAM", "blue,mark=*,mark options={fill=blue}", _pointer("multiwriterary", True),
            reads_only=True),
-    Series("OSAM$^+$", "red,mark=square*,mark options={fill=red}", _pointer("multiwrite", True)),
+    Series("OSAM$^+$", "red,mark=square*,mark options={fill=red}", _pointer("multiwrite", True),
+           reads_only=True),
     Series("ORAM", "black,mark=star,mark options={fill=black}", _pointer("recursive"), oram=True),
 )
 
@@ -289,8 +290,9 @@ FIGURE_CAPTION = (
     "Round trips at $d={d}$ and $bs={bs}$: total for graph construction (Build), per step for the "
     "eight graph algorithms (a visited vertex for BFS, DFS, Dijkstra and Prim; a move for RW and PR; "
     "a neighbor-list retrieval for CD; the whole run for DTC), over full-length runs only. "
-    "\\sysname and OSAM$^+$ are charged reads only, since their writes stay in the stash and are "
-    "evicted by reads; ORAM is charged reads and writes, both of which cost a round trip."
+    "\\sysname and OSAM$^+$ are charged their reads, public flushes included: their writes stay in "
+    "the stash and are evicted by reads or by public flushes; ORAM is charged reads and writes, both "
+    "of which cost a round trip."
 )
 
 
@@ -381,8 +383,8 @@ def summary_table(summary, structures) -> str:
         "for \\sysname, OSAM$^+$ and recursive Path ORAM: the total for Build and the cost per step for "
         "the algorithms (a visited vertex for BFS, DFS, Dijkstra and Prim; a move for RW and PR; a "
         "neighbor-list retrieval for CD; the whole run for DTC), averaged over full-length runs. "
-        "\\sysname and OSAM$^+$ are charged reads only, since their writes stay in the stash and are "
-        "evicted by reads; recursive Path ORAM is charged reads and writes. Bars are the "
+        "\\sysname and OSAM$^+$ are charged their reads, public flushes included: their writes stay in the "
+        "stash and are evicted by reads or by public flushes; recursive Path ORAM is charged reads and writes. Bars are the "
         "sample standard deviation across trials, taken in linear space and mapped through the "
         "logarithm, so they are asymmetric; Build runs once and carries none. Per-size behaviour is in "
         "Appendix~\\ref{app:osam-graph-workloads}.}",
@@ -445,6 +447,9 @@ def load_datasets(summary_path: Path, structures_path: Path) -> tuple[pd.DataFra
     flushed = set(structures.log[(structures.phase == "build")
                                   & (structures.structure == "OsamPlusFlush")])
     stash = stash[(stash.pointer != "multiwrite") | stash.log.isin(flushed)]
+    # Likewise BOSAM and OSAM+ crypto runs from before two evictions per read.
+    two_paths = stash.pointer.isin(["multiwrite", "multiwriterary"])
+    stash = stash[~two_paths | (pd.to_numeric(stash.read_evictions, errors="coerce") == 2)]
     summary, structures = _prefer_dry_run(summary), _prefer_dry_run(structures)
     summary.attrs["stash"] = stash
     return summary, structures
@@ -472,6 +477,46 @@ def stash_caption(summary, series_list, bs: int, datasets=None) -> str:
         return ""
     return (f" Maximum client stash occupancy, in blocks, over installation and every run with "
             f"cryptography at $bs={bs}$: " + ", ".join(parts) + ".")
+
+
+# The launcher's algorithm order (bench/launch_rust_tests.py): every run of an
+# algorithm starts with whatever the previous runs left in the stash.
+RUN_ORDER = ("rw", "cd", "pr", "dfs", "bfs", "dijkstra", "prim", "dtc")
+
+
+def stash_by_algorithm_caption(summary, series: Series, others, bs: int) -> str:
+    """'Maximum <series> stash per algorithm ...' at one block size, or ''.
+
+    Per algorithm, the maximum stash over its full-length runs with
+    cryptography (``max_stash_peak``) on every dataset that has them."""
+    stash = summary.attrs.get("stash")
+    if stash is None or stash.empty:
+        return ""
+    stash = stash[stash.bs == bs]
+    rows = stash[series.select(stash)]
+    if rows.empty:
+        return ""
+    peaks = pd.to_numeric(rows.max_stash_peak, errors="coerce")
+    parts = []
+    for alg in RUN_ORDER:
+        value = peaks[rows.alg == alg].max()
+        if pd.notna(value):
+            parts.append(f"{CAPTION[alg]} ${int(value)}$")
+    names = [DATASETS[d][0] for d in DATASETS if d in set(rows.dataset)]
+    where = ("the seven graphs" if len(names) == len(DATASETS)
+             else ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1])
+    text = (f" Maximum {series.label} client stash, in blocks, over the full-length runs with "
+            f"cryptography at $bs={bs}$ ({where}): " + ", ".join(parts))
+    other_parts = []
+    for other in others:
+        o = stash[other.select(stash)]
+        values = [pd.to_numeric(o[c], errors="coerce").max() for c in STASH_COLUMNS if c in o.columns]
+        values = [v for v in values if pd.notna(v)]
+        if values:
+            other_parts.append(f"{other.label} at most ${int(max(values))}$")
+    if other_parts:
+        text += "; " + ", ".join(other_parts)
+    return text + "."
 
 
 def dataset_point(summary, structures, series: Series, dataset: str, alg: str, bs: int):
@@ -709,11 +754,16 @@ def bosam_dataset_table(summary, structures, columns, full: bool) -> str:
         f"\\caption{{Base-two logarithm of round trips on the SNAP graphs with average out-degree "
         f"$d\\ge {BOSAM_MIN_DEGREE}$, for {what}: the total for Build and the cost per step for the "
         "algorithms (a visited vertex, a walk move, or a neighbor-list retrieval; the whole run for "
-        "DTC), averaged over $50$ full-length runs. \\sysname and OSAM$^+$ are charged reads only, "
-        "since their writes stay in the stash and are evicted by reads; recursive Path ORAM is charged "
+        "DTC), averaged over $50$ full-length runs. \\sysname and OSAM$^+$ are charged their reads, "
+        "public flushes included, since their writes stay in the stash; recursive Path ORAM is charged "
         "reads and writes. Entries marked -- had no full-length run in $1000$ draws of the entry point."
         + short_text
-        + "".join(stash_caption(summary, BOSAM_SERIES, bs) for bs in (64, 4096)) + "}"
+        + "".join(stash_by_algorithm_caption(summary, BOSAM_SERIES[0], BOSAM_SERIES[1:2], bs)
+                  for bs in (64, 4096))
+        + (" Runs follow the order " + ", ".join(CAPTION[a] for a in RUN_ORDER)
+           + " on one installed graph, so each algorithm starts with the stash the previous one left."
+           if summary.attrs.get("stash") is not None else "")
+        + "}"
     )
     lines.append(caption)
     if not full:
