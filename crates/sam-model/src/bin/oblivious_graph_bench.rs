@@ -540,7 +540,11 @@ fn run_selected<P, B, C>(
 where
     P: Clone,
     B: GraphBackend<P>,
-    C: BlockCodec<B::Cell, 64> + BlockCodec<B::Cell, 4096>,
+    C: BlockCodec<B::Cell, 64>
+        + BlockCodec<B::Cell, 512>
+        + BlockCodec<B::Cell, 1024>
+        + BlockCodec<B::Cell, 2048>
+        + BlockCodec<B::Cell, 4096>,
 {
     if !config.crypto {
         return run_backend(
@@ -566,6 +570,39 @@ where
             kind,
             codec,
         ),
+        512 => run_encrypted_backend::<P, _, _, 512>(
+            config,
+            input,
+            out,
+            layout,
+            backend,
+            dry,
+            pointer_branching_factor,
+            kind,
+            codec,
+        ),
+        1024 => run_encrypted_backend::<P, _, _, 1024>(
+            config,
+            input,
+            out,
+            layout,
+            backend,
+            dry,
+            pointer_branching_factor,
+            kind,
+            codec,
+        ),
+        2048 => run_encrypted_backend::<P, _, _, 2048>(
+            config,
+            input,
+            out,
+            layout,
+            backend,
+            dry,
+            pointer_branching_factor,
+            kind,
+            codec,
+        ),
         4096 => run_encrypted_backend::<P, _, _, 4096>(
             config,
             input,
@@ -578,7 +615,7 @@ where
             codec,
         ),
         _ => Err(SamError::InvalidParameter(
-            "encrypted graph runs currently support block sizes 64 and 4096",
+            "encrypted graph runs support block sizes 64, 512, 1024, 2048 and 4096",
         )
         .into()),
     }
