@@ -286,13 +286,11 @@ def write_concrete(root: Path, summary, structures, prime_tag: str) -> list[Path
     return written
 
 
+# Per-step units and charging are defined once, in the paper's experimental
+# setting (Section sec:eval-osam-workloads); the captions point there.
 FIGURE_CAPTION = (
-    "Round trips at $d={d}$ and $bs={bs}$: total for graph construction (Build), per step for the "
-    "eight graph algorithms (a visited vertex for BFS, DFS, Dijkstra and Prim; a move for RW and PR; "
-    "a neighbor-list retrieval for CD; the whole run for DTC), over full-length runs only. "
-    "\\sysname and OSAM$^+$ are charged their reads, public flushes included: their writes stay in "
-    "the stash and are evicted by reads or by public flushes; ORAM is charged reads and writes, both "
-    "of which cost a round trip."
+    "Round trips at $d={d}$ and $bs={bs}$: total for Build, per step for the algorithms "
+    "(Section~\\ref{{sec:eval-osam-workloads}})."
 )
 
 
@@ -379,15 +377,10 @@ def summary_table(summary, structures) -> str:
             lines.append(f"& {series.label} & " + " & ".join(cells) + end)
     lines += [
         "\\end{tabular}" + fit_close("\\textwidth"),
-        "\\caption{Base-two logarithm of round trips at the largest graph size of each configuration, "
-        "for \\sysname, OSAM$^+$ and recursive Path ORAM: the total for Build and the cost per step for "
-        "the algorithms (a visited vertex for BFS, DFS, Dijkstra and Prim; a move for RW and PR; a "
-        "neighbor-list retrieval for CD; the whole run for DTC), averaged over full-length runs. "
-        "\\sysname and OSAM$^+$ are charged their reads, public flushes included: their writes stay in the "
-        "stash and are evicted by reads or by public flushes; recursive Path ORAM is charged reads and writes. Bars are the "
-        "sample standard deviation across trials, taken in linear space and mapped through the "
-        "logarithm, so they are asymmetric; Build runs once and carries none. Per-size behaviour is in "
-        "Appendix~\\ref{app:osam-graph-workloads}.}",
+        "\\caption{Base-two logarithm of round trips at the largest graph size of each configuration: "
+        "total for Build, per step for the algorithms (Section~\\ref{sec:eval-osam-workloads}). "
+        "Superscripts and subscripts give one standard deviation across trials, mapped through the "
+        "logarithm. Every graph size is in Appendix~\\ref{app:osam-graph-workloads}.}",
         "\\label{tab:osam-graph-workloads}",
         "\\end{table*}",
         "",
@@ -745,25 +738,15 @@ def bosam_dataset_table(summary, structures, columns, full: bool) -> str:
     notes = sorted({f"{name} {CAPTION[alg]}: {trials}" for name, alg, trials in short if alg in columns})
     short_text = ""
     if notes:
-        short_text = (" $^{\\dagger}$Fewer than $50$ full-length runs in $1000$ draws of the entry point ("
-                      + "; ".join(notes) + " runs).")
-    what = ("all eight algorithms" if full else "Build, Contact Discovery, BFS (the frontier "
-            "traversals behave alike; all eight algorithms are in "
-            "Table~\\ref{tab:real-graph-results-full}), and Random Walk")
+        short_text = (" $^{\\dagger}$Fewer than $50$ full-length runs ("
+                      + "; ".join(notes) + ").")
+    what = ("all eight algorithms" if full else "Build, CD, BFS and RW (all eight algorithms are in "
+            "Table~\\ref{tab:real-graph-results-full})")
     caption = (
-        f"\\caption{{Base-two logarithm of round trips on the SNAP graphs with average out-degree "
-        f"$d\\ge {BOSAM_MIN_DEGREE}$, for {what}: the total for Build and the cost per step for the "
-        "algorithms (a visited vertex, a walk move, or a neighbor-list retrieval; the whole run for "
-        "DTC), averaged over $50$ full-length runs. \\sysname and OSAM$^+$ are charged their reads, "
-        "public flushes included, since their writes stay in the stash; recursive Path ORAM is charged "
-        "reads and writes. Entries marked -- had no full-length run in $1000$ draws of the entry point."
-        + short_text
-        + "".join(stash_by_algorithm_caption(summary, BOSAM_SERIES[0], BOSAM_SERIES[1:2], bs)
-                  for bs in (64, 4096))
-        + (" Runs follow the order " + ", ".join(CAPTION[a] for a in RUN_ORDER)
-           + " on one installed graph, so each algorithm starts with the stash the previous one left."
-           if summary.attrs.get("stash") is not None else "")
-        + "}"
+        f"\\caption{{Base-two logarithm of round trips on the SNAP graphs with $d\\ge {BOSAM_MIN_DEGREE}$, "
+        f"for {what}: total for Build, per step for the algorithms "
+        "(Section~\\ref{sec:eval-osam-workloads}). -- marks no full-length run in $1000$ draws of "
+        "the entry point." + short_text + "}"
     )
     lines.append(caption)
     if not full:
@@ -786,6 +769,46 @@ def bosam_dataset_table(summary, structures, columns, full: bool) -> str:
     return "\n".join(lines)
 
 
+def bosam_stash_table(summary) -> str:
+    """Maximum BOSAM stash per algorithm (full-length crypto runs), one row per block size."""
+    stash = summary.attrs.get("stash")
+    bosam, osam_plus = BOSAM_SERIES[0], BOSAM_SERIES[1]
+    rows, where, other = [], {}, 0
+    for bs, b in ((64, 6), (4096, 64)):
+        part = stash[(stash.bs == bs) & bosam.select(stash)]
+        peaks = pd.to_numeric(part.max_stash_peak, errors="coerce")
+        cells = []
+        for alg in RUN_ORDER:
+            value = peaks[part.alg == alg].max()
+            cells.append("--" if pd.isna(value) else f"{int(value)}")
+        rows.append(f"${bs}$ & ${b}$ & " + " & ".join(cells) + " \\\\")
+        where[bs] = [DATASETS[d][0] for d in DATASETS if d in set(part.dataset)]
+        o = stash[(stash.bs == bs) & osam_plus.select(stash)]
+        for column in STASH_COLUMNS:
+            if column in o.columns:
+                value = pd.to_numeric(o[column], errors="coerce").max()
+                if pd.notna(value):
+                    other = max(other, int(value))
+    big = where[4096]
+    big_text = ", ".join(big[:-1]) + (" and " if len(big) > 1 else "") + big[-1]
+    return "\n".join([
+        HEADER.rstrip("\n"),
+        "\\begin{table}[tp]",
+        "\\centering\\small",
+        "\\caption{Maximum \\sysname client stash, in blocks, per algorithm over its full-length runs "
+        f"with cryptography: all seven graphs at $bs=64$; {big_text} at $bs=4096$. Columns follow the "
+        f"order the algorithms run on one installed graph. OSAM$^+$ never exceeds ${other}$.}}",
+        "\\label{tab:dataset-stash}",
+        "\\setlength{\\tabcolsep}{3.5pt}",
+        "\\resizebox{\\columnwidth}{!}{%",
+        "\\begin{tabular}{r r | " + " ".join("r" for _ in RUN_ORDER) + "}",
+        "\\toprule",
+        "$\\mathit{bs}$ & $b$ & " + " & ".join(
+            "Dij." if a == "dijkstra" else CAPTION[a] for a in RUN_ORDER) + " \\\\",
+        "\\midrule",
+    ] + rows + ["\\bottomrule", "\\end{tabular}}", "\\end{table}", ""])
+
+
 def write_bosam_datasets(root: Path, summary, structures) -> list[Path]:
     plots = root / "Plots"
     plots.mkdir(parents=True, exist_ok=True)
@@ -794,6 +817,10 @@ def write_bosam_datasets(root: Path, summary, structures) -> list[Path]:
                                 ("bosam_dataset_table_full.tex", BOSAM_FULL_COLUMNS, True)):
         path = plots / name
         path.write_text(bosam_dataset_table(summary, structures, columns, full))
+        written.append(path)
+    if summary.attrs.get("stash") is not None:
+        path = plots / "bosam_dataset_stash.tex"
+        path.write_text(bosam_stash_table(summary))
         written.append(path)
     return written
 

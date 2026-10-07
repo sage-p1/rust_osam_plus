@@ -428,9 +428,10 @@ pub struct BalancedPointers {
 
 impl BalancedPointers {
     pub fn new(b: usize) -> Result<Self, SamError> {
-        if !(2..=255).contains(&b) {
+        // Groups of 255 or more take a three-byte length (see `put_group`).
+        if !(2..=65535).contains(&b) {
             return Err(SamError::InvalidParameter(
-                "branching factor must be in 2..=255",
+                "branching factor must be in 2..=65535",
             ));
         }
         Ok(Self {
@@ -1187,8 +1188,17 @@ fn get_byte(input: &mut &[u8]) -> Result<u8, SamError> {
     Ok(x)
 }
 
+/// Group length: one byte below 255; otherwise 255 and then the length as a
+/// u16, as for r-ary cells. Groups below 255 encode exactly as before.
 fn put_group(g: &[BalancedEntry], out: &mut Vec<u8>) -> Result<(), SamError> {
-    out.push(u8::try_from(g.len()).map_err(|_| SamError::Backend("group exceeds 255".into()))?);
+    if g.len() < 255 {
+        out.push(g.len() as u8);
+    } else {
+        let n = u16::try_from(g.len())
+            .map_err(|_| SamError::Backend("group exceeds 65535".into()))?;
+        out.push(255);
+        out.extend_from_slice(&n.to_le_bytes());
+    }
     for e in g {
         put_addr(Some(e.node), out)?;
         put_addr(e.down, out)?;
@@ -1197,7 +1207,14 @@ fn put_group(g: &[BalancedEntry], out: &mut Vec<u8>) -> Result<(), SamError> {
 }
 
 fn get_group(input: &mut &[u8]) -> Result<Arc<[BalancedEntry]>, SamError> {
-    let n = get_byte(input)? as usize;
+    let n = match get_byte(input)? {
+        255 => {
+            let lo = get_byte(input)? as usize;
+            let hi = get_byte(input)? as usize;
+            lo | (hi << 8)
+        }
+        n => n as usize,
+    };
     let mut g = Vec::with_capacity(n);
     for _ in 0..n {
         let node = get_addr(input)?.ok_or_else(|| SamError::Backend("empty group entry".into()))?;
@@ -1429,6 +1446,50 @@ mod tests {
         assert_eq!(parent, Address::Oblivious(7));
         assert_eq!(group.len(), 30);
         assert_eq!(index, UNRESOLVED);
+    }
+
+    #[test]
+    fn groups_of_255_or_more_round_trip() {
+        let codec = BalancedCellValueCodec::new(crate::pointer::U64ValueCodec);
+        for n in [254usize, 255, 256, 510, 1000] {
+            let g: Vec<BalancedEntry> = (1..=n as u64)
+                .map(|i| BalancedEntry {
+                    node: Address::Oblivious(i),
+                    down: (i % 2 == 0).then_some(Address::Oblivious(5000 + i)),
+                })
+                .collect();
+            for cell in [
+                BalancedCell::<u64>::Node {
+                    parent: Address::Oblivious(7),
+                    group: g.clone().into(),
+                    index: 0,
+                },
+                BalancedCell::<u64>::Kids { group: g.clone().into() },
+            ] {
+                let mut out = Vec::new();
+                codec.encode_value(&cell, &mut out).unwrap();
+                let header = if n < 255 { 1 } else { 3 };
+                let parent = matches!(cell, BalancedCell::Node { .. }) as usize * 4;
+                assert_eq!(out.len(), 1 + parent + header + 8 * n);
+                let decoded = codec.decode_value(&mut &out[..]).unwrap();
+                let group = match decoded {
+                    BalancedCell::Node { group, .. } | BalancedCell::Kids { group } => group,
+                    _ => panic!(),
+                };
+                assert_eq!(&group[..], &g[..]);
+            }
+        }
+        // A tree of fan-out 300 still costs height + 1 reads.
+        let mut s = sam();
+        let mut be = BalancedPointers::new(300).unwrap();
+        let mut ps = be.install(&mut s, 9u64, 1000).unwrap();
+        let r0 = reads(&s);
+        assert_eq!(
+            SmartPointerBackend::<u64>::get(&mut be, &mut s, &mut ps[777]).unwrap(),
+            Some(9)
+        );
+        assert_eq!(reads(&s) - r0, balanced_deref_reads(1000, 300));
+        assert_eq!(balanced_deref_reads(1000, 300), 3);
     }
 
     #[test]
