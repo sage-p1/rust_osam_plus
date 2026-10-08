@@ -11,7 +11,10 @@
 //!
 //! A flush is one round trip and is counted as one read of [`FLUSH_STRUCTURE`]
 //! (see [`SingleAccessMachine::flush`]), so charging OSAM+ its reads charges
-//! it every eviction round trip.
+//! it every eviction round trip. On the encrypted tree a flush also downloads a
+//! uniformly random dummy path
+//! ([`SingleAccessMachine::flush_with_dummy_read`]), so every OSAM+ round trip
+//! has the same shape: one random path plus the eviction paths.
 
 use crate::{Address, MemoryClass, SamError, SingleAccessMachine, Stats};
 
@@ -63,7 +66,7 @@ impl<V: Clone, S: SingleAccessMachine<V>> SingleAccessMachine<V> for ReadEvicted
             self.pending += 1;
             if self.pending >= self.batch {
                 self.pending = 0;
-                self.sam.flush(self.batch, FLUSH_STRUCTURE)?;
+                self.sam.flush_with_dummy_read(self.batch, FLUSH_STRUCTURE)?;
             }
         }
         Ok(())
@@ -97,7 +100,19 @@ impl<V: Clone, S: SingleAccessMachine<V>> SingleAccessMachine<V> for ReadEvicted
 
     fn flush(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
         self.pending = self.pending.saturating_sub(paths);
-        self.sam.flush(paths, structure)
+        if self.enabled {
+            // Every OSAM+ flush reads a dummy path, so it looks like a read.
+            self.sam.flush_with_dummy_read(paths, structure)
+        } else {
+            // Disabled (other pointers, e.g. BOSAM's own bounded writer):
+            // forward unchanged.
+            self.sam.flush(paths, structure)
+        }
+    }
+
+    fn flush_with_dummy_read(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+        self.pending = self.pending.saturating_sub(paths);
+        self.sam.flush_with_dummy_read(paths, structure)
     }
 
     fn stats(&self) -> &Stats {
@@ -113,6 +128,63 @@ impl<V: Clone, S: SingleAccessMachine<V>> SingleAccessMachine<V> for ReadEvicted
 mod tests {
     use super::*;
     use crate::{AccessPolicy, DryRunSam};
+
+    /// Forwards to a dry-run SAM and records which flush each call used.
+    struct Recorder {
+        inner: DryRunSam<u64>,
+        plain: usize,
+        dummy: usize,
+    }
+
+    impl SingleAccessMachine<u64> for Recorder {
+        fn alloc(&mut self, class: MemoryClass, structure: &'static str) -> Address {
+            self.inner.alloc(class, structure)
+        }
+        fn write(&mut self, address: Address, value: u64, structure: &'static str) -> Result<(), SamError> {
+            self.inner.write(address, value, structure)
+        }
+        fn read(&mut self, address: Address, structure: &'static str) -> Result<Option<u64>, SamError> {
+            self.inner.read(address, structure)
+        }
+        fn retire(&mut self, address: Address) {
+            self.inner.retire(address)
+        }
+        fn flush(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+            self.plain += 1;
+            self.inner.flush(paths, structure)
+        }
+        fn flush_with_dummy_read(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+            self.dummy += 1;
+            self.inner.flush(paths, structure)
+        }
+        fn stats(&self) -> &crate::Stats {
+            self.inner.stats()
+        }
+    }
+
+    #[test]
+    fn osam_plus_flushes_read_a_dummy_path_and_others_do_not() {
+        let new = || Recorder { inner: DryRunSam::new(AccessPolicy::MULTI_WRITE), plain: 0, dummy: 0 };
+        // Enabled (OSAM+): the write-burst flush and explicit flushes both
+        // use the dummy-read flush.
+        let mut recorder = new();
+        {
+            let mut sam = ReadEvictedWrites::new(&mut recorder, 2, 2, true);
+            let a = sam.alloc(MemoryClass::Oblivious, "t");
+            let b = sam.alloc(MemoryClass::Oblivious, "t");
+            sam.write(a, 1, "t").unwrap();
+            sam.write(b, 2, "t").unwrap();
+            sam.flush(2, "t").unwrap();
+        }
+        assert_eq!((recorder.plain, recorder.dummy), (0, 2));
+        // Disabled (e.g. BOSAM's own bounded writer): flushes pass through.
+        let mut recorder = new();
+        {
+            let mut sam = ReadEvictedWrites::new(&mut recorder, 2, 2, false);
+            sam.flush(2, "t").unwrap();
+        }
+        assert_eq!((recorder.plain, recorder.dummy), (1, 0));
+    }
 
     #[test]
     fn two_writes_without_a_read_flush_once() {

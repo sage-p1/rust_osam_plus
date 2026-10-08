@@ -905,15 +905,26 @@ def charge(pointer: str | None) -> str:
 
 def is_current_log(path: Path) -> bool:
     """Whether ``path`` was written by the current binary (full-length runs:
-    ``algorithm`` records carry ``status=``), not an older per-step one."""
+    ``algorithm`` records carry ``status=``), not an older per-step one, and,
+    for encrypted runs with buffered writes, after flushes started reading a
+    dummy path (``flush_dummy_read=true`` on the build record)."""
     try:
         lines = path.read_text().splitlines()
     except OSError:
         return False
+    crypto = False
     for line in lines:
         if line.startswith(("steps ", "stepindex ")):
             return False
         if line.startswith("algorithm ") and " status=" not in line:
+            return False
+        if line.startswith("config "):
+            crypto = " mode=crypto " in f"{line} "
+        # Encrypted OSAM+/BOSAM runs with buffered writes from before flushes
+        # read a random dummy path: their round trips are right but their
+        # timings and wire shape are not, so rerun them.
+        if (crypto and line.startswith("build ") and " read_evicted_writes=true" in line
+                and " flush_dummy_read=true" not in f"{line} "):
             return False
     return True
 

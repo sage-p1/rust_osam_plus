@@ -380,6 +380,21 @@ impl<V: OsamPlusBlock, const Z: BucketSize, const P: PathCount> PathOsamPlus<V, 
         Ok(())
     }
 
+    /// A public flush: evicts P paths and also downloads one uniformly random
+    /// dummy path, so that on the wire a flush has the same shape as a read
+    /// (one random path plus P eviction paths).
+    pub fn flush_multi_paths<R: Rng + CryptoRng>(
+        &mut self,
+        ordered_evict: bool,
+        rng: &mut R,
+    ) -> Result<(), OsamPlusError> {
+        let mut positions = self.evict_positions(P, ordered_evict, rng)?;
+        positions.push(CompleteBinaryTreeIndex::random_leaf(self.height, rng)?);
+        self.round_trip(&positions, None)?;
+        self.evict_multi_paths_counter += 1;
+        Ok(())
+    }
+
     /// Calculates the next position to evict via reverse-lexicographic ordering.
     fn evict_position(&mut self) -> Result<TreeIndex, OsamPlusError> {
         let mut evict_position: TreeIndex = self.position_counter;

@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! config impl=native mode=dry-run pointer=multiwriterary cache=false move=true block_size=4096 ... build=static prime=false dynamic_ops=0
-//! build allocations=.. reads=.. writes=.. flushes=.. nanos=.. install_nanos=.. installation_maximum_stash=.. read_evictions=.. read_evicted_writes=..
+//! build allocations=.. reads=.. writes=.. flushes=.. nanos=.. install_nanos=.. installation_maximum_stash=.. read_evictions=.. read_evicted_writes=.. flush_batch=.. flush_dummy_read=..
 //! prime walks=.. allocations=.. reads=.. writes=.. nanos=..            (with --prime)
 //! dynamic ops=.. add_vertex=.. add_edge=.. delete_edge=.. delete_vertex=.. allocations=.. reads=.. writes=.. nanos=.. tombstones=.. maximum_stash=..   (with --dynamic-ops N)
 //! trial alg=bfs index=0 start=.. attempts=.. allocations=.. reads=.. writes=.. roundtrips=.. nanos=.. size=.. cost=none stash_peak=none
@@ -1084,7 +1084,8 @@ where
     writeln!(
         out,
         "build allocations={} reads={} writes={} flushes={} nanos={} install_nanos={} \
-         installation_maximum_stash={} read_evictions={} read_evicted_writes={} flush_batch={}",
+         installation_maximum_stash={} read_evictions={} read_evicted_writes={} flush_batch={} \
+         flush_dummy_read={}",
         build.operations.allocations,
         build.operations.reads,
         build.operations.writes,
@@ -1095,6 +1096,10 @@ where
         opt(build.read_evictions),
         build.read_evicted_writes,
         opt(build.read_evicted_writes.then_some(config.flush_batch)),
+        // Encrypted flushes also read a random dummy path (osam_plus
+        // `flush_multi_paths`), so they look like reads; launchers use this
+        // field to rerun crypto logs written before that change.
+        opt((config.crypto && build.read_evicted_writes).then_some(true)),
     )?;
     write_structures(out, "build", &build.structures, &BTreeMap::new())?;
     if let Some(prime) = &build.prime {

@@ -93,6 +93,7 @@ This eliminates stale versions of blocks at a faster pace.
 The stash is allowed to hold more data to handle `P` paths simultaneously.
 `Read()` and `Write()` still evict one path at a time, so the function:
 * `val <- ReadMultiPaths()` reads and returns the value associated with the given address while evicting `P` paths.
+* `FlushMultiPaths()` is the public flush used with local writes: it evicts `P` paths and also downloads one uniformly random dummy path, so that on the wire a flush has the same shape as `ReadMultiPaths()` (one random path plus `P` eviction paths) and the server cannot tell flushes from reads. OSAM+'s write buffering in `crates/sam-model` uses it for every flush.
 
 ### Miscellaneous
 

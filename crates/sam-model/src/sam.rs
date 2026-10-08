@@ -231,6 +231,16 @@ pub trait SingleAccessMachine<V: Clone> {
     /// pending writes.
     fn flush(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError>;
 
+    /// A [`flush`](Self::flush) whose round trip also downloads one uniformly
+    /// random dummy path, so that on the wire it has the same shape as a read
+    /// (one random path plus the eviction paths). OSAM+'s write buffering
+    /// ([`crate::ReadEvictedWrites`]) uses it, so the server cannot tell its
+    /// flushes from its reads. Counts are those of `flush`; backends without a
+    /// server tree, and the default, simply call `flush`.
+    fn flush_with_dummy_read(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+        self.flush(paths, structure)
+    }
+
     /// Returns current operation statistics.
     fn stats(&self) -> &Stats;
 

@@ -429,6 +429,25 @@ impl<V: Clone, C: BlockCodec<V, B>, const B: usize, const Z: BucketSize, const P
         Ok(())
     }
 
+    fn flush_with_dummy_read(&mut self, paths: usize, structure: &'static str) -> Result<(), SamError> {
+        // As `flush`, but the first round also downloads a random dummy path
+        // (`flush_multi_paths`), so the flush looks like a read on the wire.
+        for round in 0..paths.div_ceil(P).max(1) {
+            let result = if round == 0 {
+                self.osam.flush_multi_paths(self.ordered_evict, &mut self.rng)
+            } else {
+                self.osam.evict_multi_paths(self.ordered_evict, &mut self.rng)
+            };
+            result.map_err(|error| SamError::Backend(error.to_string()))?;
+        }
+        self.stats.flushes += 1;
+        self.stats.operations.reads += 1;
+        self.structure_stats_mut(structure).reads += 1;
+        self.stats.write_batches = self.stats.write_batches.saturating_sub(paths as u64);
+        self.observe_stash();
+        Ok(())
+    }
+
     fn stats(&self) -> &Stats {
         &self.stats
     }

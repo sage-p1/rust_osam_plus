@@ -675,7 +675,13 @@ pub(crate) fn local_overwrite_and_evict_then_read<
         }
 
         let ordered_evict = rng.gen_bool(probability);
-        let _ = osam_plus.evict_multi_paths(ordered_evict, &mut rng);
+        // Alternate plain multi-path evictions with public flushes, which also
+        // read a random dummy path; both must preserve every value.
+        let _ = if rng.gen_bool(0.5) {
+            osam_plus.evict_multi_paths(ordered_evict, &mut rng)
+        } else {
+            osam_plus.flush_multi_paths(ordered_evict, &mut rng)
+        };
     }
 
     // Assert reads fetch the updated data block.
