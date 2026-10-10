@@ -271,6 +271,7 @@ def report(concrete: Path | None) -> None:
     print(f"wrote {SUMMARY} ({len(rows)} rows)")
     if concrete is not None:
         output = Path(concrete) / "tables" / "skew_table.tex"
+        output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(latex_table(rows))
         print(f"wrote {output}")
 

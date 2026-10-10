@@ -179,6 +179,7 @@ def main() -> None:
         print(f"wrote {args.csv}")
     if args.concrete:
         output = args.concrete / "tables" / "bandwidth_table.tex"
+        output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(latex_table(wan))
         print(f"wrote {output}")
 

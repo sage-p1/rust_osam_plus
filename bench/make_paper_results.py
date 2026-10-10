@@ -45,8 +45,18 @@ Datasets are read from ``--dataset-root`` (default: the launcher's,
 ``osam/real-dataset-tests``). The crypto stage needs a machine with about
 700 GB of memory for the largest trees (roadNet-PA at bs = 4096 is 276 GB).
 ``--print-only`` shows the commands without running anything. With
-``--bosam <paper>``, the r-ary pointer (BOSAM) is also run and the BlockOSAM
-paper's figures are written too.
+``--bosam``, the r-ary pointer (BOSAM) is also run and the BlockOSAM paper's
+figures are written too (into ``--bosam <paper>`` if given).
+
+On a machine without the papers (e.g. the server), leave out ``--paper``: the
+experiment stages need no paper, and ``report`` writes the generated files
+into ``--out`` (default ``bench/results/paper-out``), as ``concrete/`` (the
+Concrete OSAM paper's ``plots/`` and ``tables/``) and ``bosam/Plots/``, ready
+to copy into the two papers::
+
+    python3 make_paper_results.py --bosam              # server: run + report
+    rsync -a server:.../bench/results/paper-out/concrete/ ~/Research/osrm/paper/
+    rsync -a server:.../bench/results/paper-out/bosam/ ~/Research/osrm/oblivious_hnsw/
 """
 
 from __future__ import annotations
@@ -62,6 +72,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent          # rust_osam_plus/bench
 REPO = ROOT.parent                              # rust_osam_plus
 DEFAULT_PAPER = (REPO / ".." / ".." / "paper").resolve()  # osrm/paper
+DEFAULT_OUT = ROOT / "results" / "paper-out"     # report target without --paper
 PYTHON = sys.executable
 
 ER_LOGS = ROOT / "results" / "rust-logs"
@@ -135,13 +146,31 @@ def stage_skew(run: Runner, args: argparse.Namespace) -> None:
     run(PYTHON, ROOT / "skew_experiment.py", "run", "--jobs", args.skew_jobs)
 
 
+def rows(path: Path) -> int:
+    """Data rows of a CSV (0 if missing)."""
+    if not path.is_file():
+        return 0
+    with path.open(errors="replace") as handle:
+        return max(sum(1 for _ in handle) - 1, 0)
+
+
 def publish(run: Runner, directory: Path, names: tuple[str, str]) -> None:
-    """Copy a launcher summary pair to the repository root."""
+    """Copy a launcher summary pair to the repository root.
+
+    A rebuilt summary with fewer rows than the published one (e.g. a machine
+    with only a few stray logs) does not replace it; otherwise the published
+    file is kept as ``<name>.prev`` before it is overwritten."""
     copies = ((directory / "summary.csv", REPO / names[0]),
               (directory / "structures.csv", REPO / names[1]))
+    if not run.print_only and rows(copies[0][0]) < rows(copies[0][1]):
+        print(f"\nkeep {names[0]} and {names[1]}: the summary rebuilt from {directory.relative_to(REPO)} "
+              f"has {rows(copies[0][0])} rows, the published one {rows(copies[0][1])}")
+        return
     for source, target in copies:
         print(f"\ncopy {source.relative_to(REPO)} -> {target.relative_to(REPO)}")
         if not run.print_only:
+            if target.is_file():
+                shutil.copyfile(target, target.with_name(target.name + ".prev"))
             shutil.copyfile(source, target)
 
 
@@ -180,7 +209,11 @@ def stage_report(run: Runner, args: argparse.Namespace) -> None:
         "--dataset-structures", dataset_structures, "--concrete", paper)
     run(PYTHON, ROOT / "skew_experiment.py", "report", "--concrete", paper)
     if not run.print_only:
-        check(paper)
+        if (paper / "main.tex").is_file():
+            check(paper)
+        else:
+            print(f"\nWrote the Concrete OSAM files under {paper} and the BlockOSAM files under "
+                  f"{args.bosam}; copy them into the papers (see --help).")
 
 
 def check(paper: Path) -> None:
@@ -209,19 +242,30 @@ def check(paper: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--paper", type=Path, default=DEFAULT_PAPER,
-                        help=f"Concrete OSAM paper directory (default {DEFAULT_PAPER})")
-    parser.add_argument("--bosam", type=Path, help="Also run BOSAM and write the BlockOSAM paper's figures")
+    parser.add_argument("--paper", type=Path, default=None,
+                        help="Concrete OSAM paper directory (has main.tex). Without it, report writes "
+                             "into --out/concrete")
+    parser.add_argument("--bosam", nargs="?", const="", default=None, metavar="PAPER",
+                        help="Also run BOSAM and write the BlockOSAM paper's figures, into PAPER/Plots "
+                             "if given, else --out/bosam/Plots")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
+                        help=f"Where report writes without --paper / a --bosam path (default {DEFAULT_OUT})")
     parser.add_argument("--dataset-root", type=Path, help="Directory with the SNAP edge lists")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(STAGES))
     parser.add_argument("--report-only", action="store_true", help="Only rebuild reports, figures and tables")
     parser.add_argument("--skew-jobs", type=int, default=2, help="Parallel skew jobs (default 2)")
     parser.add_argument("--print-only", action="store_true", help="Print the commands without running them")
     args = parser.parse_args()
-    args.paper = args.paper.expanduser().resolve()
-    if not (args.paper / "main.tex").is_file():
-        print(f"{args.paper} does not look like the paper directory (no main.tex)", file=sys.stderr)
-        return 1
+    out = args.out.expanduser().resolve()
+    if args.paper is not None:
+        args.paper = args.paper.expanduser().resolve()
+        if not (args.paper / "main.tex").is_file():
+            print(f"{args.paper} does not look like the paper directory (no main.tex)", file=sys.stderr)
+            return 1
+    else:
+        args.paper = out / "concrete"
+    if args.bosam is not None:
+        args.bosam = Path(args.bosam).expanduser().resolve() if args.bosam else out / "bosam"
     stages = ["report"] if args.report_only else [stage for stage in STAGES if stage in args.stages]
     run = Runner(args.print_only)
     actions = {"er": stage_er, "datasets": stage_datasets, "crypto": stage_crypto,
