@@ -138,7 +138,8 @@ def stage_datasets(run: Runner, args: argparse.Namespace) -> None:
 def stage_crypto(run: Runner, args: argparse.Namespace) -> None:
     crypto_pointers = ["multiwrite"] + ([BOSAM_POINTER] if args.bosam else [])
     common = ["--skip-existing", "--mode", "crypto", "--trials", CRYPTO_TRIALS,
-              "--pointers", *crypto_pointers, *dataset_root_args(args)]
+              "--pointers", *crypto_pointers, *dataset_root_args(args),
+              "--bosam-read-evictions", args.bosam_read_evictions]
     run(*launcher(*common, "--block-sizes", 64, "--datasets", *DATASETS))
     run(*launcher(*common, "--block-sizes", 4096, "--datasets", *CRYPTO_4096_DATASETS))
 
@@ -255,6 +256,8 @@ def main() -> int:
     parser.add_argument("--dataset-root", type=Path, help="Directory with the SNAP edge lists")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(STAGES))
     parser.add_argument("--report-only", action="store_true", help="Only rebuild reports, figures and tables")
+    parser.add_argument("--bosam-read-evictions", type=int, default=2, choices=(2, 4, 8, 16, 24, 32),
+                        help="crypto stage: BOSAM's (balancedrary) extra eviction paths per read")
     parser.add_argument("--skew-jobs", type=int, default=2, help="Parallel skew jobs (default 2)")
     parser.add_argument("--print-only", action="store_true", help="Print the commands without running them")
     args = parser.parse_args()
