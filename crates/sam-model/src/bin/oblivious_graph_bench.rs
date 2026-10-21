@@ -95,6 +95,9 @@ struct Config {
     /// OSAM+ public flush size: a flush of this many paths after this many
     /// writes not absorbed by reads.
     flush_batch: usize,
+    /// Extra eviction paths per read of the pointers that buffer their writes
+    /// (multiwrite, multiwriterary, buffered balanced) in crypto mode.
+    read_evictions: usize,
     /// Keep per-address read/write-limit checks in the encrypted SAM. They are
     /// client state proportional to the number of addresses, so off by default.
     check_sam_policy: bool,
@@ -691,10 +694,22 @@ where
     // flushes in public batches); the other pointers evict one path on every
     // read and every write.
     if kind.access_strategy().reads == ReadStrategy::MultiPath {
-        install_and_run::<P, B, C, BLOCK, 2>(
-            config, input, out, layout, pointer_branching_factor, kind, codec, backend, dry,
-            graph, build,
-        )
+        macro_rules! with_paths {
+            ($($e:literal),*) => {
+                match config.read_evictions {
+                    $($e => install_and_run::<P, B, C, BLOCK, $e>(
+                        config, input, out, layout, pointer_branching_factor, kind, codec,
+                        backend, dry, graph, build,
+                    ),)*
+                    other => Err(format!(
+                        "--read-evictions {other} is not compiled in (use one of {})",
+                        [$($e.to_string()),*].join(", ")
+                    )
+                    .into()),
+                }
+            };
+        }
+        with_paths!(2, 4, 8, 16, 24, 32)
     } else {
         install_and_run::<P, B, C, BLOCK, 1>(
             config, input, out, layout, pointer_branching_factor, kind, codec, backend, dry,
@@ -1461,6 +1476,9 @@ oblivious_graph_bench --graph FILE --bs BYTES --pt POINTER [options]
   --flush-batch N     multiwrite (OSAM+): its writes stay in the stash and each read
                       evicts 2 paths; after N writes not absorbed by reads, one public
                       flush of N paths (one round trip, counted as a read). Default 2
+  --read-evictions E  crypto mode: extra eviction paths per read for the pointers that
+                      buffer their writes (multiwrite, multiwriterary, balancedrary);
+                      one of 2, 4, 8, 16, 24, 32. Default 2
   --pretend-original-fits   dry-run only: if `original` records cannot fit the block,
                       use Python's edge fanout (bs - 16) / 8 instead of failing; if
                       `balanced` root cells cannot fit, use multiwrite's layout. The
@@ -1509,6 +1527,7 @@ fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config>
     let mut crypto = false;
     let mut stash_size: u64 = 40; // osam_plus::DEFAULT_STASH_OVERFLOW_SIZE
     let mut flush_batch: usize = OSAM_PLUS_READ_EVICTIONS;
+    let mut read_evictions: usize = OSAM_PLUS_READ_EVICTIONS;
     let mut output = None;
     let mut check_sam_policy = false;
     let mut pretend_original_fits = false;
@@ -1558,6 +1577,7 @@ fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config>
             "--crypto" | "--encrypted" => crypto = true,
             "--stash-size" => stash_size = value(&mut args)?.parse()?,
             "--flush-batch" => flush_batch = value(&mut args)?.parse()?,
+            "--read-evictions" => read_evictions = value(&mut args)?.parse()?,
             "--output" => output = Some(value(&mut args)?),
             "--check-sam-policy" => check_sam_policy = true,
             "--pretend-original-fits" => pretend_original_fits = true,
@@ -1628,6 +1648,7 @@ fn parse_arg_list(args: impl IntoIterator<Item = String>) -> BenchResult<Config>
         crypto,
         stash_size,
         flush_batch,
+        read_evictions,
         check_sam_policy,
         pretend_original_fits,
         dynamic_build,

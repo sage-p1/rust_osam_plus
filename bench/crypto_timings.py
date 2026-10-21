@@ -83,7 +83,7 @@ POINTERS = {
     "osam+": ("multiwrite", [], "OSAM$^+$"),
     "osam": ("original", ["--no-move"], "OSAM"),
     "osam-move": ("original", [], "OSAM w/ Move"),
-    "bosam": ("multiwriterary", [], "BOSAM"),
+    "bosam": ("balancedrary", [], "BOSAM"),
 }
 
 
@@ -155,7 +155,7 @@ def measure(binary: Path, graph: str, bs: int, pointer: str, args: argparse.Name
             networks: list[Network]) -> list[dict]:
     base = base_command(binary, graph, bs, pointer, args)
     label = POINTERS[pointer][2]
-    reads_only = POINTERS[pointer][0] in ("multiwrite", "multiwriterary")
+    reads_only = POINTERS[pointer][0] in ("multiwrite", "multiwriterary", "balancedrary")
 
     # A dry-run build first: it sizes the encrypted tree before committing memory.
     dry = dict(run(base + ["--dry-run", "--alg", "build"]))

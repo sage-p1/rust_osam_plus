@@ -104,7 +104,7 @@ CONCRETE_SERIES = (
     Series("ORAM", "black,mark=star,mark options={fill=black}", _pointer("recursive"), oram=True),
 )
 BOSAM_SERIES = (
-    Series("BOSAM", "blue,mark=*,mark options={fill=blue}", _pointer("multiwriterary", True),
+    Series("BOSAM", "blue,mark=*,mark options={fill=blue}", _pointer("balancedrary", True),
            reads_only=True),
     Series("OSAM$^+$", "red,mark=square*,mark options={fill=red}", _pointer("multiwrite", True),
            reads_only=True),
@@ -380,7 +380,7 @@ def summary_table(summary, structures) -> str:
         "\\caption{Base-two logarithm of round trips at the largest graph size of each configuration: "
         "total for Build, per step for the algorithms (Section~\\ref{sec:eval-osam-workloads}). "
         "Superscripts and subscripts give one standard deviation across trials, mapped through the "
-        "logarithm. Every graph size is in Appendix~\\ref{app:osam-graph-workloads}.}",
+        "logarithm. Every graph size is in \\fullref{app:osam-graph-workloads}.}",
         "\\label{tab:osam-graph-workloads}",
         "\\end{table*}",
         "",
@@ -741,7 +741,7 @@ def bosam_dataset_table(summary, structures, columns, full: bool) -> str:
         short_text = (" $^{\\dagger}$Fewer than $50$ full-length runs ("
                       + "; ".join(notes) + ").")
     what = ("all eight algorithms" if full else "Build, CD, BFS and RW (all eight algorithms are in "
-            "Table~\\ref{tab:real-graph-results-full})")
+            "\\fullref{app:osam-graph-workloads})")
     caption = (
         f"\\caption{{Base-two logarithm of round trips on the SNAP graphs with $d\\ge {BOSAM_MIN_DEGREE}$, "
         f"for {what}: total for Build, per step for the algorithms "

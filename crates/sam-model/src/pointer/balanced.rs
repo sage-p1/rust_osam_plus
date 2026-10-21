@@ -1143,7 +1143,12 @@ impl<V: Clone> super::RawValueCells<V> for BalancedPointers {
 // ---------------------------------------------------------------------------
 
 /// Compact encoding: addresses as 4-byte identifiers (0 = none). A node
-/// cell is `6 + 8b` bytes; its own index is recovered from the group.
+/// cell is `6 + 8b` bytes; its own index is recovered from the group. A root
+/// spends 8 bytes on metadata: the tag, the alias count and height packed in
+/// three bytes (count below 2^19, height below 32), and the child-list address.
+pub const BALANCED_ROOT_METADATA_BYTES: usize = 8;
+const COUNT_BITS: u32 = 19;
+const MAX_COUNT: u32 = (1 << COUNT_BITS) - 1;
 #[derive(Clone, Debug)]
 pub struct BalancedCellValueCodec<C> {
     payload: C,
@@ -1228,9 +1233,14 @@ impl<V, C: ValueCodec<V>> ValueCodec<BalancedCell<V>> for BalancedCellValueCodec
     fn encode_value(&self, value: &BalancedCell<V>, out: &mut Vec<u8>) -> Result<(), SamError> {
         match value {
             BalancedCell::Root { value, meta } => {
+                if meta.count > MAX_COUNT || meta.height >= 32 {
+                    return Err(SamError::Backend(
+                        "balanced root: alias count must be below 2^19 and height below 32".into(),
+                    ));
+                }
                 out.push(0);
-                out.extend_from_slice(&meta.count.to_le_bytes());
-                out.push(meta.height);
+                let packed = meta.count | (u32::from(meta.height) << COUNT_BITS);
+                out.extend_from_slice(&packed.to_le_bytes()[..3]);
                 put_addr(meta.down, out)?;
                 self.payload.encode_value(value, out)?;
             }
@@ -1250,12 +1260,13 @@ impl<V, C: ValueCodec<V>> ValueCodec<BalancedCell<V>> for BalancedCellValueCodec
     fn decode_value(&self, input: &mut &[u8]) -> Result<BalancedCell<V>, SamError> {
         match get_byte(input)? {
             0 => {
-                if input.len() < 5 {
+                if input.len() < 3 {
                     return Err(SamError::Backend("truncated root".into()));
                 }
-                let count = u32::from_le_bytes(input[..4].try_into().unwrap());
-                *input = &input[4..];
-                let height = get_byte(input)?;
+                let packed = u32::from_le_bytes([input[0], input[1], input[2], 0]);
+                *input = &input[3..];
+                let count = packed & MAX_COUNT;
+                let height = (packed >> COUNT_BITS) as u8;
                 let down = get_addr(input)?;
                 let value = self.payload.decode_value(input)?;
                 Ok(BalancedCell::Root {
@@ -1388,6 +1399,53 @@ mod tests {
         }
     }
 
+    /// Writes per operation, with `r` its reads (no cache): a dereference
+    /// writes at most `(b + 1)(r - 1) + 1` cells (one group and child list per
+    /// internal node on the path, then the root), and a copy or delete at most
+    /// `(b + 1) r + 3` (the paper's Theorem 2); for `b >= 3` that is at most
+    /// `(b + 2) r`.
+    #[test]
+    fn writes_per_operation_are_bounded_by_reads() {
+        fn writes(s: &DryRunSam<BalancedCell<u64>>) -> u64 {
+            s.stats().operations.writes
+        }
+        for b in [2usize, 3, 4, 8, 16, 64] {
+            let mut s = sam();
+            let mut be = BalancedPointers::new(b).unwrap().unbuffered();
+            let mut ps = vec![SmartPointerBackend::<u64>::new_pointer(&mut be, &mut s, 0).unwrap()];
+            let mut rng = StdRng::seed_from_u64(7 + b as u64);
+            let steps = if b >= 16 { 20_000 } else { 4_000 };
+            for step in 0..steps {
+                let op = rng.gen_range(0..10);
+                let i = rng.gen_range(0..ps.len());
+                let (r0, w0) = (reads(&s), writes(&s));
+                let deref = if op < 5 || ps.len() == 1 {
+                    let c = SmartPointerBackend::<u64>::copy_pointer(&mut be, &mut s, &mut ps[i])
+                        .unwrap();
+                    ps.push(c);
+                    false
+                } else if op < 7 {
+                    let mut p = ps.swap_remove(i);
+                    SmartPointerBackend::<u64>::delete(&mut be, &mut s, &mut p).unwrap();
+                    false
+                } else {
+                    SmartPointerBackend::<u64>::get(&mut be, &mut s, &mut ps[i]).unwrap();
+                    true
+                };
+                let (r, w) = (reads(&s) - r0, writes(&s) - w0);
+                let bound = if deref {
+                    (b as u64 + 1) * (r - 1) + 1
+                } else {
+                    (b as u64 + 1) * r + 3
+                };
+                assert!(w <= bound, "b={b} step={step} deref={deref} reads={r} writes={w}");
+                if b >= 3 {
+                    assert!(w <= (b as u64 + 2) * r, "b={b} step={step} reads={r} writes={w}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn cached_aliases_hit_the_open_root() {
         let b = 4;
@@ -1446,6 +1504,33 @@ mod tests {
         assert_eq!(parent, Address::Oblivious(7));
         assert_eq!(group.len(), 30);
         assert_eq!(index, UNRESOLVED);
+
+        // A root: 8 bytes of metadata before the payload, round-tripped.
+        let codec = BalancedCellValueCodec::new(U64ValueCodec);
+        for (count, height) in [(1u32, 0u8), (2, 1), (952, 4), (MAX_COUNT, 31)] {
+            let root = BalancedCell::Root {
+                value: 0xdead_beefu64,
+                meta: BalancedMeta {
+                    count,
+                    height,
+                    down: Some(Address::Oblivious(9)),
+                },
+            };
+            let mut out = Vec::new();
+            codec.encode_value(&root, &mut out).unwrap();
+            assert_eq!(out.len(), BALANCED_ROOT_METADATA_BYTES + 8);
+            let BalancedCell::Root { value, meta } = codec.decode_value(&mut &out[..]).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!((value, meta.count, meta.height), (0xdead_beef, count, height));
+            assert_eq!(meta.down, Some(Address::Oblivious(9)));
+        }
+        let too_many = BalancedCell::Root {
+            value: 0u64,
+            meta: BalancedMeta { count: MAX_COUNT + 1, height: 1, down: None },
+        };
+        assert!(codec.encode_value(&too_many, &mut Vec::new()).is_err());
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub use backend::{
 };
 pub use balanced::{
     balanced_deref_reads, balanced_height, balanced_update_reads, BalancedCell,
+    BALANCED_ROOT_METADATA_BYTES,
     BalancedCellValueCodec, BalancedEntry, BalancedMeta, BalancedPointer, BalancedPointers,
     BalancedWriteback,
 };

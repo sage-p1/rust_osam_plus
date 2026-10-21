@@ -128,6 +128,10 @@ EXTRA_POINTERS = ("balanced", "balancedrary")
 # OSAM+ (multiwrite) and BOSAM keep their writes in the stash and evict on
 # reads, so only reads are round trips.
 READS_ONLY_POINTERS = ("multiwrite", "multiwriterary", "balancedrary")
+# Extra eviction paths per read for BOSAM's balanced pointer (balancedrary) in
+# crypto mode (--bosam-read-evictions); the binary's default is 2. Other
+# pointers keep 2. A non-default value appears in log names as _e-<E>.
+BOSAM_READ_EVICTIONS = 2
 MAX_ER_WORKLOAD = local.MAX_ER_WORKLOAD
 ALGORITHMS = local.ALGORITHMS  # rw cd pr dfs bfs dijkstra prim dtc, in this order
 MAX_STEPS = local.MAX_STEPS
@@ -481,6 +485,8 @@ class RustJob:
         )
         if self.pointer_bf is not None:
             name += f"_b-{self.pointer_bf}"
+        if self.pointer == "balancedrary" and BOSAM_READ_EVICTIONS != 2:
+            name += f"_e-{BOSAM_READ_EVICTIONS}"
         if self.python_layout:
             name += "_layout-python"
         if not self.cache_enabled:
@@ -541,6 +547,8 @@ class RustJob:
         ]
         if self.pointer_bf is not None:
             command += ["--pointer-branching-factor", str(self.pointer_bf)]
+        if self.pointer == "balancedrary" and BOSAM_READ_EVICTIONS != 2:
+            command += ["--read-evictions", str(BOSAM_READ_EVICTIONS)]
         if self.python_layout:
             command.append("--pretend-original-fits")
         return command
@@ -1064,6 +1072,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
                         "vertices and edges one at a time (same graph).")
     parser.add_argument("--prime", action=flag, default=False,
                         help="Run n/10 random walks of length 50 after the build (default off).")
+    parser.add_argument("--bosam-read-evictions", type=int, default=2, metavar="E",
+                        choices=(2, 4, 8, 16, 24, 32),
+                        help="Crypto mode: extra eviction paths per read for balancedrary "
+                        "(BOSAM's balanced pointer); default 2. Logs get _e-<E> when not 2.")
     parser.add_argument("--dynamic-ops", type=int, default=0, metavar="N",
                         help="Apply N random vertex/edge insertions and deletions before the "
                         "algorithms (default 0).")
@@ -1120,6 +1132,8 @@ def main() -> int:
         modes = ("dry-run",)
     powers = range(args.min_power, args.max_power + 1)
     options = GraphOptions(static=args.static, prime=args.prime, dynamic_ops=args.dynamic_ops)
+    global BOSAM_READ_EVICTIONS
+    BOSAM_READ_EVICTIONS = args.bosam_read_evictions
     probe = BlockFitProbe(binary)
     jobs, skipped = build_jobs(
         binary, probe, modes, args.block_sizes, args.pointers, args.degrees, powers,

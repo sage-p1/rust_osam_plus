@@ -44,7 +44,7 @@ pub trait GraphBackend<P: Clone>: RawValueCells<GraphObject<P>, Pointer = P> {}
 impl<P: Clone, B: RawValueCells<GraphObject<P>, Pointer = P>> GraphBackend<P> for B {}
 
 /// Root-cell metadata of the balanced pointer (see `pointer::BalancedCellValueCodec`).
-const BALANCED_ROOT_OVERHEAD: usize = 10;
+const BALANCED_ROOT_OVERHEAD: usize = crate::pointer::BALANCED_ROOT_METADATA_BYTES;
 
 /// Exact fixed-block layout selected for graph records.
 ///
@@ -70,7 +70,7 @@ impl GraphLayout {
         let pointer_cell_overhead = match pointer_kind {
             PointerKind::Original => 41,
             PointerKind::MultiWrite | PointerKind::MultiWriteRary { .. } => 1,
-            // Tag 1 + alias count 4 + height 1 + child-list address 4.
+            // Tag 1 + packed alias count and height 3 + child-list address 4.
             PointerKind::Balanced { .. } => BALANCED_ROOT_OVERHEAD,
             PointerKind::Recursive => 0,
         };
@@ -148,7 +148,7 @@ impl GraphLayout {
         let pointer_cell_overhead = match pointer_kind {
             PointerKind::Original => 41,
             PointerKind::MultiWrite | PointerKind::MultiWriteRary { .. } => 1,
-            // Tag 1 + alias count 4 + height 1 + child-list address 4.
+            // Tag 1 + packed alias count and height 3 + child-list address 4.
             PointerKind::Balanced { .. } => BALANCED_ROOT_OVERHEAD,
             PointerKind::Recursive => 0,
         };

@@ -79,7 +79,9 @@ ER_LOGS = ROOT / "results" / "rust-logs"
 DATASET_LOGS = ROOT / "results" / "rust-dataset-logs"
 
 CONCRETE_POINTERS = ("original", "multiwrite", "recursive")
-BOSAM_POINTER = "multiwriterary"
+# BOSAM is the balanced b-ary pointer (complete alias trees); the earlier
+# self-adjusting r-ary pointer is "multiwriterary".
+BOSAM_POINTER = "balancedrary"
 DATASETS = ("emailEucore", "p2pGnutella04", "higgsTwitter", "gpluscombined",
             "twitchgamers", "roadNetPA", "comyoutube")
 # Datasets whose encrypted trees fit in memory at bs = 4096.
